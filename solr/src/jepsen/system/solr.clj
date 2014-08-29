@@ -1,0 +1,293 @@
+(ns jepsen.system.solr
+  (:import (java.io IOException))
+  (:require [cheshire.core :as json]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
+            [clojure.tools.logging :refer [info]]
+            [jepsen.client :as client]
+            [jepsen.control :as c]
+            [jepsen.control.net :as net]
+            [jepsen.db :as db]
+            [jepsen.os.debian :as debian]
+            [jepsen.util :refer [meh timeout]]
+            [jepsen.nemesis :as nemesis]
+            [clj-http.client :as http]
+            [flux.core :as flux]
+            [flux.query :as q]
+            [flux.http :as fluxhttp]
+            ))
+
+(defn find-in-replica-map [replicas state node_name]
+  (filter
+    (fn [[k v]]
+      (and (= state (get v "state")) (= node_name (get v "node_name"))))
+    replicas)
+  )
+
+(defn get-replica-map
+  "Get information about all replicas for the shard from cluster state in ZK"
+  []
+  (let [res (-> (str "http://localhost:8983/solr/admin/collections?"
+                     "action=clusterstatus&"
+                     "collection=collection1&"
+                     "shard=shard1&"
+                     "wt=json")
+                (http/get {:as :json-string-keys})
+                :body)
+        ]
+    (get-in res ["cluster" "collections" "collection1" "shards" "shard1" "replicas"])
+    )
+  )
+
+(defn get-node-info-from-cluster-state
+  "Get complete node information (core, coreNodeName, baseUrl, coreUrl from cluster state in ZK"
+  ([host-port]
+   (get-node-info-from-cluster-state host-port "active"))
+  ([host-port state]
+   (find-in-replica-map (get-replica-map) state
+                        (str host-port "_solr")
+                        )
+   )
+  )
+
+(defn wait
+  "Waits for solr to be healthy on the current node. Color is red,
+  yellow, or green; timeout is in seconds."
+  ([host-port timeout-secs]
+   (wait host-port timeout-secs "active"))
+  ([host-port timeout-secs wait-for-state]
+   (timeout (* 1000 timeout-secs)
+            (throw (RuntimeException.
+                     "Timed out waiting for solr cluster recovery"))
+            (loop []
+              (when
+                  (try
+                    (empty? (get-node-info-from-cluster-state host-port))
+                    (catch RuntimeException e true))
+                (Thread/sleep 1000)
+                (recur))))))
+
+(defn get-host-name-from-node-info
+  [node-info]
+  (let [node-name (get (second (first node-info)) "node_name")]
+    (.substring node-name 0 (.indexOf node-name ":"))
+    )
+  )
+
+(defn get-leader-info
+  [replica-map]
+  (filter (fn [[k v]] (let [leader (get v "leader")] (and (not (nil? leader)) (= "true" leader)))) replica-map)
+  )
+
+(defn primaries
+  "Returns a map of nodes to the node that node thinks is the current primary,
+  as a map of keywords to keywords. Assumes elasticsearch node names are the
+  same as the provided node names."
+  [nodes]
+  (->> nodes
+       (pmap (fn [node]
+               (let [replica-map (get-replica-map)
+                     leader-info (get-leader-info replica-map)
+                     leader-host-name (if-not (empty? leader-info) (get-host-name-from-node-info leader-info))
+
+                     ]
+                 [node leader-host-name]
+                 )
+               )
+             )
+       (into {})))
+
+(defn self-primaries
+  "A sequence of nodes which think they are primaries."
+  [nodes]
+  (->> nodes
+       primaries
+       (filter (partial apply =))
+       (map key)))
+
+(def isolate-self-primaries-nemesis
+  "A nemesis which completely isolates any node that thinks it is the primary."
+  (nemesis/partitioner
+    (fn [nodes]
+      (let [ps (self-primaries nodes)]
+        (nemesis/complete-grudge
+          ; All nodes that aren't self-primaries in one partition
+          (cons (remove (set ps) nodes)
+                ; Each self-primary in a different partition
+                (map list ps)))))))
+
+(defn http-error
+  "Takes an elastisch ExInfo exception and extracts the HTTP error response as
+  a string."
+  [ex]
+  ; AFIACT this is the shortest path to actual information about what went
+  ; wrong
+  (-> ex .getData :object :body json/parse-string (get "error")))
+
+(defn all-results
+  "A sequence of all results from a search query."
+  [client query]
+  (flux/with-connection client
+                        (try
+                          (let [res (flux/query query {:rows 0})
+                                hitcount (get-in res :response :numFound)
+                                res (flux/query query {:rows hitcount})]
+                            (get-in res :response :docs)
+                            )
+                          (catch Exception e
+                            (throw (RuntimeException. "Errored out"))
+                            )
+                          )
+                        )
+  )
+
+(def index-name "collection1")
+
+(defrecord CreateSetClient [client]
+  client/Client
+  (setup! [_ test node]
+    (let [
+           client (fluxhttp/create "http://localhost:8983/solr" index-name)]
+      ; Create index
+      ;(try
+      ;  (esi/create client index-name
+      ;              :mappings {"number" {:properties
+      ;                                    {:num {:type "integer"
+      ;                                           :store "yes"}}}}
+      ;              :settings {"index" {"refresh_interval" "1"}})
+      ;  (catch clojure.lang.ExceptionInfo e
+      ;    ; Is this seriously how you're supposed to do idempotent
+      ;    ; index creation? I've gotta be doing this wrong.
+      ;    (let [err (http-error e)]
+      ;         (when-not (re-find #"IndexAlreadyExistsException" err)
+      ;                   (throw (RuntimeException. err))))))
+
+      (CreateSetClient. client)))
+
+  (invoke! [this test op]
+    (case (:f op)
+      :add (timeout 5000 (assoc op :type :info :value :timed-out)
+                    ;(let [r (esd/create client index-name "number" {:num (:value op)})]
+                    (flux/with-connection client
+                                          (try
+                                            (let [r (flux/add {:id {:value op}})]
+                                              (if
+                                                  (= 0 (get-in r :responseHeader :status))
+                                                (assoc op :type :ok)
+                                                (assoc op :type :info :value r)
+                                                )
+                                              )
+                                            (catch IOException e (assoc op :type :info :value :timed-out))
+                                            )
+                                          )
+                    )
+      :read (try
+              (info "Waiting for recovery before read")
+              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 1000 :active))
+              (Thread/sleep (* 10 1000))
+              (info "Recovered; flushing index before read")
+              (flux/with-connection client (flux/commit))
+              (assoc op :type :ok
+                        :value (->> (all-results client "*:*")
+                                    (map (comp :num :_source))
+                                    (into (sorted-set))))
+              (catch RuntimeException e
+                (assoc op :type :fail :value (.getMessage e))))))
+
+  (teardown! [_ test]
+    (flux.client/shutdown client)))
+
+(defn create-set-client
+  "A set implemented by creating independent documents"
+  []
+  (CreateSetClient. nil))
+
+(defn get-first-doc
+  "Gets the first doc from a solr query response. Returns nil if no docs were found"
+  [r]
+  (let [docs (get-in r :response :docs)]
+    (if
+        (= 0 (get-in r :responseHeader :status))
+      (if
+          ((not-empty docs))
+        (first docs)
+        nil
+        )
+      nil
+      )
+    )
+  )
+
+
+; Use SolrCloud MVCC to do CAS read/write cycles, implementing a set.
+(defrecord CASSetClient [doc-id client]
+  client/Client
+  (setup! [_ test node]
+    (let [
+           client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
+      (CASSetClient. doc-id client)))
+
+  (invoke! [this test op]
+    (case (:f op)
+      :add (timeout 5000 (assoc op :type :info :value :timed-out)
+                    (flux/with-connection client
+                                          (try
+                                            (let [current (flux/query (str "id:" doc-id) {:wt "json"})
+                                                  doc (get-first-doc current)
+                                                  ]
+                                              (if
+                                                  (not (nil? doc))
+                                                ((let [version (get doc "_version_")
+                                                       values (-> current :values)
+                                                       values' (vec (conj values (:value op)))]
+                                                   (try
+                                                     (let
+                                                         [r (flux/add doc-id
+                                                                      {:values values'}
+                                                                      :_version_ version)]
+                                                       (if
+                                                           (= 0 (get-in r :responseHeader :status))
+                                                         (assoc op :type :ok)
+                                                         (assoc op :type :fail)
+                                                         )
+                                                       )
+                                                     (catch Exception e ((assoc op :type :fail)))
+                                                     )
+                                                   )
+                                                 ; Can't write without a read
+                                                 (assoc op :type :fail)
+                                                 )
+                                                )
+                                              (assoc op :type :fail)
+                                              )
+                                            )
+                                          (catch IOException e (assoc op :type :info :value :timed-out))
+                                          )
+                    )
+      )
+
+    :read (try
+            (info "Waiting for recovery before read")
+            (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 :active))
+            (info "Recovered; flushing index before read")
+            (flux/with-connection client (flux/commit)
+                                  (try
+                                    (let [r (flux/query (str "id:" doc-id) {:wt "json"})
+                                          doc (get-first-doc r)
+                                          ]
+                                      (if (not (nil? doc))
+                                        (assoc op :type :ok :value (into (sorted-set (get doc :_version_))))
+                                        )
+                                      )
+                                    (catch Exception e ())
+                                    )
+
+                                  )
+            ))
+
+  (teardown! [_ test]
+    (.close client)))
+
+
+(defn cas-set-client []
+  (CASSetClient. "0" nil))

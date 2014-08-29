@@ -1,9 +1,14 @@
 (defproject jepsen "0.0.3-SNAPSHOT"
   :description "Call Me Maybe: Network Partitions in Practice"
+  :source-paths ["solr/src" "src"]
+  :test-paths ["solr/test" "test"]
   :dependencies [[org.clojure/clojure "1.6.0-beta1"]
                  [org.clojure/data.fressian "0.2.0"]
 ;                            :exclusions [org.fressian/fressian]]
                  [org.clojure/tools.logging "0.2.6"]
+                 [com.codesignals/flux "0.5.0"
+                  :exclusions [org.apache.httpcomponents/httpclient]]
+                 [clojurewerkz/elastisch "2.0.0-rc2"]
                  [clj-time "0.6.0"]
                  [knossos "0.2"]
                  [clj-ssh "0.5.7"]
@@ -65,7 +70,13 @@
              :elasticsearch {:dependencies
                        [[clojurewerkz/elastisch "2.0.0-rc2"]]
                              :source-paths ["elasticsearch/src"]
-                             :test-paths ["elasticsearch/test"]}}
+                             :test-paths ["elasticsearch/test"]}
+             :solr  {:dependencies
+                      [[com.codesignals/flux "0.5.0"]]
+                             :source-paths ["solr/src"]
+                             :test-paths ["solr/test"]
+                      }
+             }
   :main jepsen.repl
   :jvm-opts ["-Xmx32g" "-XX:+UseConcMarkSweepGC" "-XX:+UseParNewGC"
              "-XX:+CMSParallelRemarkEnabled" "-XX:+AggressiveOpts"
