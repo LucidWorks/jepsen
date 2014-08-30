@@ -80,9 +80,8 @@
   )
 
 (defn primaries
-  "Returns a map of nodes to the node that node thinks is the current primary,
-  as a map of keywords to keywords. Assumes elasticsearch node names are the
-  same as the provided node names."
+  "Returns a map of nodes to the node that node thinks is the current leader,
+  as a map of keywords to keywords."
   [nodes]
   (->> nodes
        (pmap (fn [node]
@@ -98,7 +97,7 @@
        (into {})))
 
 (defn self-primaries
-  "A sequence of nodes which think they are primaries."
+  "A sequence of nodes which think they are leaders."
   [nodes]
   (->> nodes
        primaries
@@ -115,14 +114,6 @@
           (cons (remove (set ps) nodes)
                 ; Each self-primary in a different partition
                 (map list ps)))))))
-
-(defn http-error
-  "Takes an elastisch ExInfo exception and extracts the HTTP error response as
-  a string."
-  [ex]
-  ; AFIACT this is the shortest path to actual information about what went
-  ; wrong
-  (-> ex .getData :object :body json/parse-string (get "error")))
 
 (defn all-results
   "A sequence of all results from a search query."
@@ -148,26 +139,11 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create "http://localhost:8983/solr" index-name)]
-      ; Create index
-      ;(try
-      ;  (esi/create client index-name
-      ;              :mappings {"number" {:properties
-      ;                                    {:num {:type "integer"
-      ;                                           :store "yes"}}}}
-      ;              :settings {"index" {"refresh_interval" "1"}})
-      ;  (catch clojure.lang.ExceptionInfo e
-      ;    ; Is this seriously how you're supposed to do idempotent
-      ;    ; index creation? I've gotta be doing this wrong.
-      ;    (let [err (http-error e)]
-      ;         (when-not (re-find #"IndexAlreadyExistsException" err)
-      ;                   (throw (RuntimeException. err))))))
-
       (CreateSetClient. client)))
 
   (invoke! [this test op]
     (case (:f op)
       :add (timeout 5000 (assoc op :type :info :value :timed-out)
-                    ;(let [r (esd/create client index-name "number" {:num (:value op)})]
                     (flux/with-connection client
                                           (try
                                             (let [r (flux/add {:id {:value op}})]
