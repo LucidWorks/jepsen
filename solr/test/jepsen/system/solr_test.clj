@@ -85,6 +85,9 @@
                                      (gen/nemesis
                                        (gen/once {:type :info :f :stop}))
                                      (gen/clients
-                                       (gen/once {:type :invoke :f :read})))))]
+                                       (gen/once {:type :invoke :f :read})))
+                        :ssh { :username "root"
+                               :password "root"
+                               :strict-host-key-checking "false"}))]
               (is (:valid? (:results test)))
               (pprint (:results test))))
