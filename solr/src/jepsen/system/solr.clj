@@ -17,6 +17,8 @@
             [flux.http :as fluxhttp]
             ))
 
+(def index-name "jepsen2")
+
 (defn find-in-replica-map [replicas state node_name]
   (filter
     (fn [[k v]]
@@ -29,13 +31,13 @@
   []
   (let [res (-> (str "http://localhost:8983/solr/admin/collections?"
                      "action=clusterstatus&"
-                     "collection=collection1&"
+                     "collection=" index-name "&"
                      "shard=shard1&"
                      "wt=json")
                 (http/get {:as :json-string-keys})
                 :body)
         ]
-    (get-in res ["cluster" "collections" "collection1" "shards" "shard1" "replicas"])
+    (get-in res ["cluster" "collections" index-name "shards" "shard1" "replicas"])
     )
   )
 
@@ -132,13 +134,12 @@
                         )
   )
 
-(def index-name "collection1")
 
 (defrecord CreateSetClient [client]
   client/Client
   (setup! [_ test node]
     (let [
-           client (fluxhttp/create "http://localhost:8983/solr" index-name)]
+           client (fluxhttp/create "http://" (name node) ":8983/solr" index-name)]
       (CreateSetClient. client)))
 
   (invoke! [this test op]
@@ -146,17 +147,13 @@
       :add (timeout 5000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
-                                            (let [r (flux/add {:id {:value op}})]
+                                            (let [r (flux/add {:id (:value op)})
+                                                  _ (println "got response: " r)]
                                               (if
-                                                  (= 0 (get-in r :responseHeader :status))
+                                                (= 0 (get-in r :responseHeader :status))
                                                 (assoc op :type :ok)
-                                                (assoc op :type :info :value r)
-                                                )
-                                              )
-                                            (catch IOException e (assoc op :type :info :value :timed-out))
-                                            )
-                                          )
-                    )
+                                                (assoc op :type :info :value r)))
+                                            (catch IOException e (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Waiting for recovery before read")
               (c/on-many (:nodes test) (wait (str c/*host* ":8983") 1000 :active))
@@ -193,7 +190,6 @@
       )
     )
   )
-
 
 ; Use SolrCloud MVCC to do CAS read/write cycles, implementing a set.
 (defrecord CASSetClient [doc-id client]
