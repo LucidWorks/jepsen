@@ -139,7 +139,7 @@
   client/Client
   (setup! [_ test node]
     (let [
-           client (fluxhttp/create (str "http://" c/*host* ":8983/solr") index-name)]
+           client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
       (CreateSetClient. client)))
 
   (invoke! [this test op]
