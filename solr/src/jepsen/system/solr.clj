@@ -150,7 +150,7 @@
                                             (let [r (flux/add {:id (:value op)})
                                                   _ (println "got response: " r)]
                                               (if
-                                                (= 0 (get-in r :responseHeader :status))
+                                                (= 0 (get-in r ["responseHeader" "status"]))
                                                 (assoc op :type :ok)
                                                 (assoc op :type :info :value r)))
                                             (catch IOException e (assoc op :type :info :value :timed-out)))))
@@ -178,15 +178,13 @@
 (defn get-first-doc
   "Gets the first doc from a solr query response. Returns nil if no docs were found"
   [r]
-  (let [docs (get-in r :response :docs)]
-    (if
-        (= 0 (get-in r :responseHeader :status))
-      (if
-          ((not-empty docs))
+  (let [docs (get-in r [:response :docs])]
+    (when
+        (= 0 (get-in r [:responseHeader :status]))
+      (when
+          (not-empty docs)
         (first docs)
-        nil
         )
-      nil
       )
     )
   )
@@ -218,7 +216,7 @@
                                                                       {:values values'}
                                                                       :_version_ version)]
                                                        (if
-                                                           (= 0 (get-in r :responseHeader :status))
+                                                           (= 0 (get-in r ["responseHeader" "status"]))
                                                          (assoc op :type :ok)
                                                          (assoc op :type :fail)
                                                          )
