@@ -157,7 +157,7 @@
                                             (catch IOException e (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) (wait (str (name node) ":8983") 1000 :active))
+              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 1000 :active))
               (Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
