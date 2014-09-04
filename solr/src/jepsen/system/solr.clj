@@ -139,7 +139,7 @@
   client/Client
   (setup! [_ test node]
     (let [
-           client (fluxhttp/create "http://" (name node) ":8983/solr" index-name)]
+           client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
       (CreateSetClient. client)))
 
   (invoke! [this test op]
@@ -216,7 +216,7 @@
                                                                       {:values values'}
                                                                       :_version_ version)]
                                                        (if
-                                                           (= 0 (get-in r ["responseHeader" "status"]))
+                                                           (= 0 (get-in r [:responseHeader :status]))
                                                          (assoc op :type :ok)
                                                          (assoc op :type :fail)
                                                          )
