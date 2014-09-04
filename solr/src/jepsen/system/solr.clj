@@ -28,8 +28,8 @@
 
 (defn get-replica-map
   "Get information about all replicas for the shard from cluster state in ZK"
-  []
-  (let [res (-> (str "http://localhost:8983/solr/admin/collections?"
+  [host-port]
+  (let [res (-> (str "http://" host-port "/solr/admin/collections?"
                      "action=clusterstatus&"
                      "collection=" index-name "&"
                      "shard=shard1&"
@@ -46,7 +46,7 @@
   ([host-port]
    (get-node-info-from-cluster-state host-port "active"))
   ([host-port state]
-   (find-in-replica-map (get-replica-map) state
+   (find-in-replica-map (get-replica-map host-port) state
                         (str host-port "_solr")
                         )
    )
@@ -61,10 +61,11 @@
    (timeout (* 1000 timeout-secs)
             (throw (RuntimeException.
                      "Timed out waiting for solr cluster recovery"))
+            (println (str "Going to wait for " host-port " for timeout " timeout-secs " until we see state " wait-for-state))
             (loop []
               (when
                   (try
-                    (empty? (get-node-info-from-cluster-state host-port))
+                    (empty? (get-node-info-from-cluster-state host-port wait-for-state))
                     (catch RuntimeException e true))
                 (Thread/sleep 1000)
                 (recur))))))
@@ -87,7 +88,7 @@
   [nodes]
   (->> nodes
        (pmap (fn [node]
-               (let [replica-map (get-replica-map)
+               (let [replica-map (get-replica-map node)
                      leader-info (get-leader-info replica-map)
                      leader-host-name (if-not (empty? leader-info) (get-host-name-from-node-info leader-info))
 
@@ -156,7 +157,7 @@
                                             (catch IOException e (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 1000 :active))
+              (c/on-many (:nodes test) (wait (str (name node) ":8983") 1000 :active))
               (Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
