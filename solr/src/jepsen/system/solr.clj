@@ -47,9 +47,11 @@
   ([host-port]
    (get-node-info-from-cluster-state host-port "active"))
   ([host-port state]
-   (find-in-replica-map (get-replica-map host-port) state
-                        (str host-port "_solr")
-                        )
+   (let [node-info (find-in-replica-map (get-replica-map host-port) state
+                              (str host-port "_solr"))]
+     (println (str "Got node info for " host-port " as " node-info))
+     node-info
+     )
    )
   )
 
