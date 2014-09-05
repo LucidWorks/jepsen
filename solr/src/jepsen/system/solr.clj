@@ -58,6 +58,7 @@
   ([host-port timeout-secs]
    (wait host-port timeout-secs "active"))
   ([host-port timeout-secs wait-for-state]
+   (println (str "Waiting for host/port " host-port " for time " timeout-secs " until state=" wait-for-state))
    (timeout (* 1000 timeout-secs)
             (throw (RuntimeException.
                      "Timed out waiting for solr cluster recovery"))
