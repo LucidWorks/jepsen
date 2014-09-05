@@ -81,7 +81,7 @@
                                                  {:type :info :f :start}
                                                  (gen/sleep 200)
                                                  {:type :info :f :stop}])))
-                                          (gen/time-limit 400))
+                                          (gen/time-limit 100))
                                      (gen/nemesis
                                        (gen/once {:type :info :f :stop}))
                                      (gen/clients
