@@ -162,7 +162,6 @@
                                             (catch IOException e (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Calling commit on solr")
-              (flux/commit)
               (info "Waiting for recovery before read")
               (c/on-many (:nodes test) ((println (str "Waiting for " c/*host* ":8983")) wait (str c/*host* ":8983") 1000 :active))
               (Thread/sleep (* 10 1000))
