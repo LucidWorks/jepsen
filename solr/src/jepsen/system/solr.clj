@@ -152,6 +152,7 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
+      (println (str "creating client for http://" (name node) ":8983/solr/" index-name))
       (CreateSetClient. client)))
 
   (invoke! [this test op]
@@ -169,7 +170,7 @@
       :read (try
               (info "Calling commit on solr")
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) ((println (str "Waiting for " c/*host* ":8983")) (wait (str c/*host* ":8983") 5 "active")))
+              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 5 "active"))
               (Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
