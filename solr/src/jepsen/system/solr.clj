@@ -79,6 +79,7 @@
                   ;    )
                   ;  ;(when (not (empty (get-node-info-from-cluster-state host-port wait-for-state))) false)
                   ;  (catch RuntimeException e true))
+                (Thread/sleep 1000)
                 (recur)
                 )
               ))))
