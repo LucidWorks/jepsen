@@ -37,6 +37,7 @@
                 (http/get {:as :json-string-keys})
                 :body)
         ]
+    (println (str "Got clusterstatus on " host-port " as " res))
     (get-in res ["cluster" "collections" index-name "shards" "shard1" "replicas"])
     )
   )
@@ -66,7 +67,10 @@
             (loop []
               (when
                   (try
-                    (empty? (get-node-info-from-cluster-state host-port wait-for-state))
+                    (let [node-info (get-node-info-from-cluster-state host-port wait-for-state)]
+                      (println (str "Node info for " host-port " in state=" wait-for-state " found to be: " node-info))
+                      (empty? node-info)
+                      )
                     (catch RuntimeException e true))
                 (Thread/sleep 1000)
                 (recur))))))
@@ -158,7 +162,7 @@
                                             (catch IOException e (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 1000 :active))
+              (c/on-many (:nodes test) ((println (str "Waiting for " c/*host* ":8983")) wait (str c/*host* ":8983") 1000 :active))
               (Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
