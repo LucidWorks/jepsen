@@ -169,7 +169,7 @@
       :read (try
               (info "Calling commit on solr")
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) ((println (str "Waiting for " c/*host* ":8983")) (wait (str c/*host* ":8983") 5 :active)))
+              (c/on-many (:nodes test) ((println (str "Waiting for " c/*host* ":8983")) (wait (str c/*host* ":8983") 5 "active")))
               (Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
@@ -251,7 +251,7 @@
 
     :read (try
             (info "Waiting for recovery before read")
-            (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 :active))
+            (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 "active"))
             (info "Recovered; flushing index before read")
             (flux/with-connection client (flux/commit)
                                   (try
