@@ -135,11 +135,12 @@
   (flux/with-connection client
                         (try
                           (let [res (flux/query query {:rows 0})
-                                hitcount (get-in res :response :numFound)
+                                hitcount (get-in res [:response :numFound])
                                 res (flux/query query {:rows hitcount})]
-                            (get-in res :response :docs)
+                            (get-in res [:response :docs])
                             )
                           (catch Exception e
+                            (println e)
                             (throw (RuntimeException. "Errored out"))
                             )
                           )
