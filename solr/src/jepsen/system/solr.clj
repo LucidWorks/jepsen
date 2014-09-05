@@ -65,15 +65,17 @@
                      "Timed out waiting for solr cluster recovery"))
             (println (str "Going to wait for " host-port " for timeout " timeout-secs " until we see state " wait-for-state))
             (loop []
-              (when
-                  (try
-                    (let [node-info (get-node-info-from-cluster-state host-port wait-for-state)]
-                      (println (str "Node info for " host-port " in state=" wait-for-state " found to be: " node-info))
+              (try
+                (let [node-info (get-node-info-from-cluster-state host-port wait-for-state)]
+                  (println (str "Node info for " host-port " in state=" wait-for-state " found to be: " node-info))
+                  (when
                       (empty? node-info)
-                      )
-                    (catch RuntimeException e true))
-                (Thread/sleep 1000)
-                (recur))))))
+                      (Thread/sleep 1000)
+                    )
+                  )
+                (catch RuntimeException e true))
+              (recur)
+              ))))
 
 (defn get-host-name-from-node-info
   [node-info]
