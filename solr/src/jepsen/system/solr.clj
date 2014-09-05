@@ -65,16 +65,20 @@
                      "Timed out waiting for solr cluster recovery"))
             (println (str "Going to wait for " host-port " for timeout " timeout-secs " until we see state " wait-for-state))
             (loop []
-              (try
-                (let [node-info (get-node-info-from-cluster-state host-port wait-for-state)]
-                  (println (str "Node info for " host-port " in state=" wait-for-state " found to be: " node-info))
-                  (when
-                      (empty? node-info)
-                      (Thread/sleep 1000)
-                    )
-                  )
-                (catch RuntimeException e true))
-              (recur)
+              (when
+                  (empty? (get-node-info-from-cluster-state host-port wait-for-state))
+                  ;(try
+                  ;  (let [node-info (get-node-info-from-cluster-state host-port wait-for-state)]
+                  ;    (println (str "Node info for " host-port " in state=" wait-for-state " found to be: " node-info))
+                  ;    (when
+                  ;        (empty? node-info)
+                  ;        false
+                  ;      )
+                  ;    )
+                  ;  ;(when (not (empty (get-node-info-from-cluster-state host-port wait-for-state))) false)
+                  ;  (catch RuntimeException e true))
+                (recur)
+                )
               ))))
 
 (defn get-host-name-from-node-info
@@ -165,7 +169,7 @@
       :read (try
               (info "Calling commit on solr")
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) ((println (str "Waiting for " c/*host* ":8983")) (wait (str c/*host* ":8983") 1000 :active)))
+              (c/on-many (:nodes test) ((println (str "Waiting for " c/*host* ":8983")) (wait (str c/*host* ":8983") 5 :active)))
               (Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
