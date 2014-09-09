@@ -29,11 +29,13 @@
 (defn get-replica-map
   "Get information about all replicas for the shard from cluster state in ZK"
   [host-port]
-  (let [res (-> (str "http://" host-port "/solr/admin/collections?"
-                     "action=clusterstatus&"
-                     "collection=" index-name "&"
-                     "shard=shard1&"
-                     "wt=json")
+  (let [ _ (info "Fetching replica map from " host-port)
+         api-call (str "http://" host-port "/solr/admin/collections?"
+                       "action=clusterstatus&"
+                       "collection=" index-name "&"
+                       "shard=shard1&"
+                       "wt=json")
+         res (-> api-call
                 (http/get {:as :json-string-keys})
                 :body)
         ]
