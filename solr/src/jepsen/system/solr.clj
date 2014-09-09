@@ -102,7 +102,7 @@
   [nodes]
   (->> nodes
        (pmap (fn [node]
-               (let [replica-map (get-replica-map node)
+               (let [replica-map (get-replica-map (str node ":8983"))
                      leader-info (get-leader-info replica-map)
                      leader-host-name (if-not (empty? leader-info) (get-host-name-from-node-info leader-info))
 
