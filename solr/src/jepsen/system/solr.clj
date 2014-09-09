@@ -156,6 +156,10 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
+      (flux/with-connection client
+                            (flux/delete-by-query "*:*")
+                            (flux/commit)
+                            )
       (info (str "creating client for http://" (name node) ":8983/solr/" index-name))
       (CreateSetClient. client)))
 
