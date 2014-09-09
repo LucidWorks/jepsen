@@ -37,7 +37,7 @@
                 (http/get {:as :json-string-keys})
                 :body)
         ]
-    (println (str "Got clusterstatus on " host-port " as " res))
+    (info (str "Got clusterstatus on " host-port " as " res))
     (get-in res ["cluster" "collections" index-name "shards" "shard1" "replicas"])
     )
   )
@@ -49,7 +49,7 @@
   ([host-port state]
    (let [node-info (find-in-replica-map (get-replica-map host-port) state
                               (str host-port "_solr"))]
-     (println (str "Got node info for " host-port " as " node-info))
+     (info (str "Got node info for " host-port " as " node-info))
      node-info
      )
    )
@@ -61,11 +61,11 @@
   ([host-port timeout-secs]
    (wait host-port timeout-secs "active"))
   ([host-port timeout-secs wait-for-state]
-   (println (str "Waiting for host/port " host-port " for time " timeout-secs " until state=" wait-for-state))
+   (info (str "Waiting for host/port " host-port " for time " timeout-secs " until state=" wait-for-state))
    (timeout (* 1000 timeout-secs)
             (throw (RuntimeException.
                      "Timed out waiting for solr cluster recovery"))
-            (println (str "Going to wait for " host-port " for timeout " timeout-secs " until we see state " wait-for-state))
+            (info (str "Going to wait for " host-port " for timeout " timeout-secs " until we see state " wait-for-state))
             (loop []
               (when
                   (empty? (get-node-info-from-cluster-state host-port wait-for-state))
@@ -156,7 +156,7 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
-      (println (str "creating client for http://" (name node) ":8983/solr/" index-name))
+      (info (str "creating client for http://" (name node) ":8983/solr/" index-name))
       (CreateSetClient. client)))
 
   (invoke! [this test op]
@@ -165,7 +165,7 @@
                     (flux/with-connection client
                                           (try
                                             (let [r (flux/add {:id (:value op)})
-                                                  _ (println "got response: " r)]
+                                                  _ (info "got response: " r)]
                                               (if
                                                 (= 0 (get-in r ["responseHeader" "status"]))
                                                 (assoc op :type :ok)
