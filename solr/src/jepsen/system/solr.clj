@@ -180,7 +180,7 @@
               (flux/with-connection client (flux/commit))
               (assoc op :type :ok
                         :value (->> (all-results client "*:*")
-                                    (map (comp :num :_source))
+                                    (map (comp :id))
                                     (into (sorted-set))))
               (catch RuntimeException e
                 (assoc op :type :fail :value (.getMessage e))))))
