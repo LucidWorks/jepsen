@@ -61,7 +61,7 @@
                         :model     (model/set)
                         :checker   (checker/compose {:html timeline/html
                                                      :set  checker/set})
-                        ;:nemesis   isolate-self-primaries-nemesis
+                        :nemesis   isolate-self-primaries-nemesis
                         ;:nemesis   (nemesis/partition-random-node)
                         ;:nemesis   (nemesis/partition-random-halves)
                         ;:nemesis   (nemesis/partition-halves)
