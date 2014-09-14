@@ -29,7 +29,7 @@
 (defn get-replica-map
   "Get information about all replicas for the shard from cluster state in ZK"
   [host-port]
-  (let [ _ (info "Fetching replica map from " host-port)
+  (let [
          api-call (str "http://" host-port "/solr/admin/collections?"
                        "action=clusterstatus&"
                        "collection=" index-name "&"
@@ -39,7 +39,7 @@
                 (http/get {:as :json-string-keys})
                 :body)
         ]
-    (info (str "Got clusterstatus on " host-port " as " res))
+    ;(info (str "Got clusterstatus on " host-port " as " res))
     (get-in res ["cluster" "collections" index-name "shards" "shard1" "replicas"])
     )
   )
@@ -51,7 +51,6 @@
   ([host-port state]
    (let [node-info (find-in-replica-map (get-replica-map host-port) state
                               (str host-port "_solr"))]
-     (info (str "Got node info for " host-port " as " node-info))
      node-info
      )
    )
@@ -63,7 +62,6 @@
   ([host-port timeout-secs]
    (wait host-port timeout-secs "active"))
   ([host-port timeout-secs wait-for-state]
-   (info (str "Waiting for host/port " host-port " for time " timeout-secs " until state=" wait-for-state))
    (timeout (* 1000 timeout-secs)
             (throw (RuntimeException.
                      "Timed out waiting for solr cluster recovery"))
@@ -71,16 +69,6 @@
             (loop []
               (when
                   (empty? (get-node-info-from-cluster-state host-port wait-for-state))
-                  ;(try
-                  ;  (let [node-info (get-node-info-from-cluster-state host-port wait-for-state)]
-                  ;    (println (str "Node info for " host-port " in state=" wait-for-state " found to be: " node-info))
-                  ;    (when
-                  ;        (empty? node-info)
-                  ;        false
-                  ;      )
-                  ;    )
-                  ;  ;(when (not (empty (get-node-info-from-cluster-state host-port wait-for-state))) false)
-                  ;  (catch RuntimeException e true))
                 (Thread/sleep 1000)
                 (recur)
                 )
@@ -158,6 +146,8 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
+      (.setConnectionTimeout client 1000)
+      (.setSoTimeout client 3000)
       (flux/with-connection client
                             (flux/delete-by-query "*:*")
                             (flux/commit)
@@ -219,7 +209,14 @@
   client/Client
   (setup! [_ test node]
     (let [
-           client (fluxhttp/create (str "http://" c/*host* ":8983/solr") index-name)]
+           client (fluxhttp/create (str "http://" (name node)  ":8983/solr") index-name)]
+      (.setConnectionTimeout client 1000)
+      (.setSoTimeout client 3000)
+      (flux/with-connection client
+                            (flux/delete-by-query "*:*")
+                            (flux/add {:id doc-id :values []})
+                            (flux/commit)
+                            )
       (CASSetClient. doc-id client)))
 
   (invoke! [this test op]
@@ -230,30 +227,30 @@
                                             (let [current (flux/query (str "id:" doc-id) {:wt "json"})
                                                   doc (get-first-doc current)
                                                   ]
+                                              (println (str "Got first-doc: " doc))
                                               (if
                                                   (not (nil? doc))
-                                                ((let [version (get doc "_version_")
-                                                       values (-> current :values)
+                                                (let [version (get doc :_version_)
+                                                       values (get doc :values)
                                                        values' (vec (conj values (:value op)))]
+                                                   (println (str "Version: " version " values: " values " values': " values'))
                                                    (try
+                                                     (println (str "Going to add doc: " {:id doc-id :values values' :_version_ version}))
                                                      (let
-                                                         [r (flux/add doc-id
-                                                                      {:values values'}
-                                                                      :_version_ version)]
+                                                         [r  (flux/add {:id doc-id :values values' :_version_ version})]
+                                                       (println (str "Got response from add " r))
                                                        (if
                                                            (= 0 (get-in r [:responseHeader :status]))
                                                          (assoc op :type :ok)
                                                          (assoc op :type :fail)
                                                          )
                                                        )
-                                                     (catch Exception e ((assoc op :type :fail)))
+                                                     (catch Exception e (assoc op :type :fail))
                                                      )
                                                    )
-                                                 ; Can't write without a read
-                                                 (assoc op :type :fail)
-                                                 )
+                                                ; Can't write without a read
+                                                (assoc op :type :fail)
                                                 )
-                                              (assoc op :type :fail)
                                               )
                                             )
                                           (catch IOException e (assoc op :type :info :value :timed-out))
@@ -264,6 +261,7 @@
     :read (try
             (info "Waiting for recovery before read")
             (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 "active"))
+            (Thread/sleep (* 10 1000))
             (info "Recovered; flushing index before read")
             (flux/with-connection client (flux/commit)
                                   (try
@@ -271,17 +269,26 @@
                                           doc (get-first-doc r)
                                           ]
                                       (if (not (nil? doc))
-                                        (assoc op :type :ok :value (into (sorted-set (get doc :_version_))))
+                                        ;(assoc op :type :ok :value (into (sorted-set (get doc :_version_))))
+                                        (assoc op :type :ok
+                                                  :value (->> doc
+                                                              :_version_
+                                                              :values
+                                                              (into (sorted-set))
+                                                              )
+                                                  )
                                         )
                                       )
-                                    (catch Exception e ())
+                                    (catch Exception e (assoc op :type :fail))
                                     )
 
                                   )
-            ))
+            (catch Exception e (assoc op :type :fail))
+            )
+    )
 
   (teardown! [_ test]
-    (.close client)))
+    (flux.client/shutdown client)))
 
 
 (defn cas-set-client []
