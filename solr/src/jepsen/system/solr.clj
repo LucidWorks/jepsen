@@ -160,18 +160,17 @@
       :add (timeout 5000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
-                                            (let [r (flux/add {:id (:value op)})
-                                                  _ (info "got response: " r)]
+                                            (let [r (flux/add {:id (:value op)})]
                                               (if
-                                                (= 0 (get-in r ["responseHeader" "status"]))
+                                                (= 0 (get-in r [:responseHeader :status]))
                                                 (assoc op :type :ok)
                                                 (assoc op :type :info :value r)))
-                                            (catch IOException e (assoc op :type :info :value :timed-out)))))
+                                            (catch Exception e (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Calling commit on solr")
               (info "Waiting for recovery before read")
               (c/on-many (:nodes test) (wait (str c/*host* ":8983") 60 "active"))
-              (Thread/sleep (* 10 1000))
+              ;(Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
               (assoc op :type :ok
@@ -261,7 +260,7 @@
     :read (try
             (info "Waiting for recovery before read")
             (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 "active"))
-            (Thread/sleep (* 10 1000))
+            ;(Thread/sleep (* 10 1000))
             (info "Recovered; flushing index before read")
             (flux/with-connection client (flux/commit)
                                   (try
@@ -277,6 +276,7 @@
                                                               (into (sorted-set))
                                                               )
                                                   )
+                                        (assoc op :type :fail)
                                         )
                                       )
                                     (catch Exception e (assoc op :type :fail))
