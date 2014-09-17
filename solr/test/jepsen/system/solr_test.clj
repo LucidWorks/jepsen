@@ -20,14 +20,15 @@
 ;  (let [test (run!
 ;               (assoc
 ;                 noop-test
-;                 :name      "elasticsearch"
-;                 :os        debian/os
-;                 :db        db
+;                 :name      "solr"
+;                 ;:os        debian/os
+;                 ;:db        db/noop
 ;                 :client    (cas-set-client)
 ;                 :model     (model/set)
 ;                 :checker   (checker/compose {:html timeline/html
 ;                                              :set  checker/set})
-;                 :nemesis   (nemesis/partitioner nemesis/bridge)
+;                 ;:nemesis   (nemesis/partitioner nemesis/bridge)
+;                 :nemesis   (nemesis/partition-random-halves)
 ;                 :generator (gen/phases
 ;                              (->> (range)
 ;                                   (map (fn [x] {:type  :invoke
@@ -46,7 +47,11 @@
 ;                              (gen/nemesis
 ;                                (gen/once {:type :info :f :stop}))
 ;                              (gen/clients
-;                                (gen/once {:type :invoke :f :read})))))]
+;                                (gen/once {:type :invoke :f :read})))
+;                 :ssh { :username "ubuntu"
+;                        :password "ubuntu"
+;                        :strict-host-key-checking "false"}
+;                 ))]
 ;    (is (:valid? (:results test)))
 ;    (pprint (:results test))))
 
@@ -81,13 +86,13 @@
                                                  {:type :info :f :start}
                                                  (gen/sleep 200)
                                                  {:type :info :f :stop}])))
-                                          (gen/time-limit 300))
+                                          (gen/time-limit 600))
                                      (gen/nemesis
                                        (gen/once {:type :info :f :stop}))
                                      (gen/clients
                                        (gen/once {:type :invoke :f :read})))
-                        :ssh { :username "root"
-                               :password "root"
+                        :ssh { :username "ubuntu"
+                               :password "ubuntu"
                                :strict-host-key-checking "false"}))]
               (is (:valid? (:results test)))
               (pprint (:results test))))
