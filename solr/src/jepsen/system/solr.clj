@@ -146,8 +146,8 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
-      (.setConnectionTimeout client 1000)
-      (.setSoTimeout client 3000)
+      ;(.setConnectionTimeout client 1000)
+      ;(.setSoTimeout client 3000)
       (flux/with-connection client
                             (flux/delete-by-query "*:*")
                             (flux/commit)
@@ -157,15 +157,17 @@
 
   (invoke! [this test op]
     (case (:f op)
-      :add (timeout 5000 (assoc op :type :info :value :timed-out)
+      ; large timeout value here because the server timeouts are applied and are respected by solr
+      :add (timeout 500000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
+                                            (info (str "Adding " (:value op) " to node " (.getBaseURL client)))
                                             (let [r (flux/add {:id (:value op)})]
                                               (if
                                                 (= 0 (get-in r [:responseHeader :status]))
                                                 (assoc op :type :ok)
                                                 (assoc op :type :info :value r)))
-                                            (catch Exception e (assoc op :type :info :value :timed-out)))))
+                                            (catch Exception e (clojure.tools.logging/warn "Unable to write: " e) (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Calling commit on solr")
               (info "Waiting for recovery before read")
@@ -209,8 +211,8 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node)  ":8983/solr") index-name)]
-      (.setConnectionTimeout client 1000)
-      (.setSoTimeout client 3000)
+      ;(.setConnectionTimeout client 1000)
+      ;(.setSoTimeout client 3000)
       (flux/with-connection client
                             (flux/delete-by-query "*:*")
                             (flux/add {:id doc-id :values []})
@@ -220,19 +222,20 @@
 
   (invoke! [this test op]
     (case (:f op)
-      :add (timeout 5000 (assoc op :type :info :value :timed-out)
+      ; large timeout value here because the server timeouts are applied and are respected by solr
+      :add (timeout 500000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
                                             (let [current (flux/query (str "id:" doc-id) {:wt "json"})
                                                   doc (get-first-doc current)
                                                   ]
-                                              (println (str "Got first-doc: " doc))
+                                              ;(println (str "Got first-doc: " doc))
                                               (if
                                                   (not (nil? doc))
                                                 (let [version (get doc :_version_)
                                                        values (get doc :values)
                                                        values' (vec (conj values (:value op)))]
-                                                   (println (str "Version: " version " values: " values " values': " values'))
+                                                   ;(println (str "Version: " version " values: " values " values': " values'))
                                                    (try
                                                      (println (str "Going to add doc: " {:id doc-id :values values' :_version_ version}))
                                                      (let
@@ -244,7 +247,7 @@
                                                          (assoc op :type :fail)
                                                          )
                                                        )
-                                                     (catch Exception e (assoc op :type :fail))
+                                                     (catch Exception e (clojure.tools.logging/warn "Unable to write " e) (assoc op :type :fail))
                                                      )
                                                    )
                                                 ; Can't write without a read
@@ -252,7 +255,7 @@
                                                 )
                                               )
                                             )
-                                          (catch IOException e (assoc op :type :info :value :timed-out))
+                                          (catch IOException e (clojure.tools.logging/warn "Unable to write " e) (assoc op :type :info :value :timed-out))
                                           )
                     )
       )
