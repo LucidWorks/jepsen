@@ -97,7 +97,7 @@
                      leader-host-name (if-not (empty? leader-info) (get-host-name-from-node-info leader-info))
 
                      ]
-                 [node leader-host-name]
+                 [node (keyword leader-host-name)]
                  )
                )
              )
