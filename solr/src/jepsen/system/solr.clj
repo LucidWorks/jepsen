@@ -235,12 +235,10 @@
                                                 (let [version (get doc :_version_)
                                                        values (get doc :values)
                                                        values' (vec (conj values (:value op)))]
-                                                   ;(println (str "Version: " version " values: " values " values': " values'))
                                                    (try
-                                                     (println (str "Going to add doc: " {:id doc-id :values values' :_version_ version}))
+                                                     (info (str "Going to add doc: " {:id doc-id :values values' :_version_ version} " on " (.getBaseURL client)))
                                                      (let
                                                          [r  (flux/add {:id doc-id :values values' :_version_ version})]
-                                                       (println (str "Got response from add " r))
                                                        (if
                                                            (= 0 (get-in r [:responseHeader :status]))
                                                          (assoc op :type :ok)
@@ -263,7 +261,7 @@
     :read (try
             (info "Waiting for recovery before read")
             (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 "active"))
-            ;(Thread/sleep (* 10 1000))
+            (Thread/sleep (* 1 1000))
             (info "Recovered; flushing index before read")
             (flux/with-connection client (flux/commit)
                                   (try
@@ -274,7 +272,6 @@
                                         ;(assoc op :type :ok :value (into (sorted-set (get doc :_version_))))
                                         (assoc op :type :ok
                                                   :value (->> doc
-                                                              :_version_
                                                               :values
                                                               (into (sorted-set))
                                                               )
