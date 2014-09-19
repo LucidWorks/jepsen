@@ -226,7 +226,8 @@
       :add (timeout 500000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
-                                            (let [current (flux/query (str "id:" doc-id) {:wt "json"})
+                                            (let [ _ (flux/commit)
+                                                   current (flux/query (str "id:" doc-id) {:wt "json"})
                                                   doc (get-first-doc current)
                                                   ]
                                               ;(println (str "Got first-doc: " doc))
@@ -256,35 +257,36 @@
                                           (catch IOException e (clojure.tools.logging/warn "Unable to write " e) (assoc op :type :info :value :timed-out))
                                           )
                     )
+      :read (try
+              (info "Waiting for recovery before read")
+              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 "active"))
+              (Thread/sleep (* 1 1000))
+              (info "Recovered; flushing index before read")
+              (flux/with-connection client (flux/commit)
+                                    (try
+                                      (let [r (flux/query (str "id:" doc-id) {:wt "json"})
+                                            doc (get-first-doc r)
+                                            ]
+                                        (if (not (nil? doc))
+                                          ;(assoc op :type :ok :value (into (sorted-set (get doc :_version_))))
+                                          (assoc op :type :ok
+                                                    :value (->> doc
+                                                                :values
+                                                                (into (sorted-set))
+                                                                )
+                                                    )
+                                          (assoc op :type :fail)
+                                          )
+                                        )
+                                      (catch Exception e (assoc op :type :fail))
+                                      )
+
+                                    )
+              (catch Exception e (assoc op :type :fail))
+              )
       )
 
-    :read (try
-            (info "Waiting for recovery before read")
-            (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 "active"))
-            (Thread/sleep (* 1 1000))
-            (info "Recovered; flushing index before read")
-            (flux/with-connection client (flux/commit)
-                                  (try
-                                    (let [r (flux/query (str "id:" doc-id) {:wt "json"})
-                                          doc (get-first-doc r)
-                                          ]
-                                      (if (not (nil? doc))
-                                        ;(assoc op :type :ok :value (into (sorted-set (get doc :_version_))))
-                                        (assoc op :type :ok
-                                                  :value (->> doc
-                                                              :values
-                                                              (into (sorted-set))
-                                                              )
-                                                  )
-                                        (assoc op :type :fail)
-                                        )
-                                      )
-                                    (catch Exception e (assoc op :type :fail))
-                                    )
 
-                                  )
-            (catch Exception e (assoc op :type :fail))
-            )
     )
 
   (teardown! [_ test]
