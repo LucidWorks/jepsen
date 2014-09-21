@@ -17,7 +17,76 @@
             [flux.http :as fluxhttp]
             ))
 
-(def index-name "jepsen2")
+(def index-name "jepsen5x3")
+
+(defn solr-node-name
+  "Returns the solr node name for given host/port"
+  [host-port]
+  (str host-port "_solr"))
+
+(defn all-replicas
+  [host-port]
+  (let [api-call (str "http://" host-port "/solr/admin/collections?"
+                      "action=clusterstatus"
+                      "&collection=" index-name
+                      "&wt=json")
+        res (-> api-call
+                (http/get {:as :json-string-keys})
+                :body)
+        shards (get-in res ["cluster" "collections" index-name "shards"])]
+    (into {}
+          (map (fn [[k v]] (get v "replicas")) shards))
+    ))
+
+(defn active?
+  "Returns true if replica is in active state"
+  {:static true}
+  [replica]
+  (= "active" (get-in (second replica) ["state"])))
+
+(defn recovering?
+  "Returns true if replica is in recovery state"
+  {:static true}
+  [replica]
+  (= "recovery" (get-in (second replica) ["state"])))
+
+(defn down?
+  "Returns true if replica is in down state"
+  {:static true}
+  [replica]
+  (= "down" (get-in (second replica) ["state"])))
+
+(defn not-active?
+  "Returns true if replica is not in active state"
+  {:static true}
+  [replica]
+  (not (active? replica)))
+
+(defn hosted-by?
+  "Returns true if given replica is hosted locally by given host/port"
+  {:static true}
+  [replica host-port]
+  (= (solr-node-name host-port) (get-in (second replica) ["node_name"])))
+
+(defn leader?
+  "Returns true if given replica is a leader"
+  {:static true}
+  [replica]
+  (= "true" (get-in (second replica) ["leader"])))
+
+(defn wait
+  [host-port timeout-secs]
+  (timeout (* 1000 timeout-secs)
+           (throw (RuntimeException.
+                    "Timed out waiting for solr node to be active"))
+           (loop []
+             (when (some
+                     not-active?
+                     (filter
+                       (fn [x] (hosted-by? x host-port))
+                       (all-replicas host-port)))
+               (Thread/sleep 1000)
+               (recur)))))
 
 (defn find-in-replica-map [replicas state node_name]
   (filter
@@ -25,102 +94,6 @@
       (and (= state (get v "state")) (= node_name (get v "node_name"))))
     replicas)
   )
-
-(defn get-replica-map
-  "Get information about all replicas for the shard from cluster state in ZK"
-  [host-port]
-  (let [
-         api-call (str "http://" host-port "/solr/admin/collections?"
-                       "action=clusterstatus&"
-                       "collection=" index-name "&"
-                       "shard=shard1&"
-                       "wt=json")
-         res (-> api-call
-                (http/get {:as :json-string-keys})
-                :body)
-        ]
-    ;(info (str "Got clusterstatus on " host-port " as " res))
-    (get-in res ["cluster" "collections" index-name "shards" "shard1" "replicas"])
-    )
-  )
-
-(defn get-node-info-from-cluster-state
-  "Get complete node information (core, coreNodeName, baseUrl, coreUrl from cluster state in ZK"
-  ([host-port]
-   (get-node-info-from-cluster-state host-port "active"))
-  ([host-port state]
-   (let [node-info (find-in-replica-map (get-replica-map host-port) state
-                              (str host-port "_solr"))]
-     node-info
-     )
-   )
-  )
-
-(defn wait
-  "Waits for solr to be healthy on the current node. Color is red,
-  yellow, or green; timeout is in seconds."
-  ([host-port timeout-secs]
-   (wait host-port timeout-secs "active"))
-  ([host-port timeout-secs wait-for-state]
-   (timeout (* 1000 timeout-secs)
-            (throw (RuntimeException.
-                     "Timed out waiting for solr cluster recovery"))
-            (info (str "Going to wait for " host-port " for timeout " timeout-secs " until we see state " wait-for-state))
-            (loop []
-              (when
-                  (empty? (get-node-info-from-cluster-state host-port wait-for-state))
-                (Thread/sleep 1000)
-                (recur)
-                )
-              ))))
-
-(defn get-host-name-from-node-info
-  [node-info]
-  (let [node-name (get (second (first node-info)) "node_name")]
-    (.substring node-name 0 (.indexOf node-name ":"))
-    )
-  )
-
-(defn get-leader-info
-  [replica-map]
-  (filter (fn [[k v]] (let [leader (get v "leader")] (and (not (nil? leader)) (= "true" leader)))) replica-map)
-  )
-
-(defn primaries
-  "Returns a map of nodes to the node that node thinks is the current leader,
-  as a map of keywords to keywords."
-  [nodes]
-  (->> nodes
-       (pmap (fn [node]
-               (let [replica-map (get-replica-map (str (name node) ":8983"))
-                     leader-info (get-leader-info replica-map)
-                     leader-host-name (if-not (empty? leader-info) (get-host-name-from-node-info leader-info))
-
-                     ]
-                 [node (keyword leader-host-name)]
-                 )
-               )
-             )
-       (into {})))
-
-(defn self-primaries
-  "A sequence of nodes which think they are leaders."
-  [nodes]
-  (->> nodes
-       primaries
-       (filter (partial apply =))
-       (map key)))
-
-(def isolate-self-primaries-nemesis
-  "A nemesis which completely isolates any node that thinks it is the primary."
-  (nemesis/partitioner
-    (fn [nodes]
-      (let [ps (self-primaries nodes)]
-        (nemesis/complete-grudge
-          ; All nodes that aren't self-primaries in one partition
-          (cons (remove (set ps) nodes)
-                ; Each self-primary in a different partition
-                (map list ps)))))))
 
 (defn all-results
   "A sequence of all results from a search query."
@@ -171,7 +144,7 @@
       :read (try
               (info "Calling commit on solr")
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 60 "active"))
+              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 60))
               ;(Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit))
@@ -246,7 +219,7 @@
                                                          (assoc op :type :fail)
                                                          )
                                                        )
-                                                     (catch Exception e (clojure.tools.logging/warn "Unable to write " e) (assoc op :type :fail))
+                                                     (catch Exception e (clojure.tools.logging/warn "Unable to write value=" (:value op) " on: " (.getBaseURL client) " due to: " e) (assoc op :type :fail))
                                                      )
                                                    )
                                                 ; Can't write without a read
@@ -254,12 +227,12 @@
                                                 )
                                               )
                                             )
-                                          (catch IOException e (clojure.tools.logging/warn "Unable to write " e) (assoc op :type :info :value :timed-out))
+                                          (catch Exception e (clojure.tools.logging/warn "Unable to write value=" (:value op) " on: " (.getBaseURL client) " due to: " e) (assoc op :type :info :value :timed-out))
                                           )
                     )
       :read (try
               (info "Waiting for recovery before read")
-              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 200 "active"))
+              (c/on-many (:nodes test) (wait (str c/*host* ":8983") 60))
               (Thread/sleep (* 1 1000))
               (info "Recovered; flushing index before read")
               (flux/with-connection client (flux/commit)
