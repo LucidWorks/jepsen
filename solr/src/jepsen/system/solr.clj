@@ -14,8 +14,7 @@
             [clj-http.client :as http]
             [flux.core :as flux]
             [flux.query :as q]
-            [flux.http :as fluxhttp]
-            ))
+            [flux.http :as fluxhttp]))
 
 (def index-name "jepsen5x3")
 
@@ -26,7 +25,8 @@
 
 (defn all-replicas
   [host-port]
-  (let [api-call (str "http://" host-port "/solr/admin/collections?"
+  (try
+    (let [api-call (str "http://" host-port "/solr/admin/collections?"
                       "action=clusterstatus"
                       "&collection=" index-name
                       "&wt=json")
@@ -36,7 +36,8 @@
         shards (get-in res ["cluster" "collections" index-name "shards"])]
     (into {}
           (map (fn [[k v]] (get v "replicas")) shards))
-    ))
+    )
+    (catch Exception e (clojure.tools.logging/warn "Couldn't fetch clusterstate due to " e) {})))
 
 (defn active?
   "Returns true if replica is in active state"
@@ -80,13 +81,17 @@
            (throw (RuntimeException.
                     "Timed out waiting for solr node to be active"))
            (loop []
-             (when (some
-                     not-active?
-                     (filter
-                       (fn [x] (hosted-by? x host-port))
-                       (all-replicas host-port)))
-               (Thread/sleep 1000)
-               (recur)))))
+             (let [replicas (all-replicas host-port)]
+               (when (or
+                       (empty? replicas)
+                       (some
+                         not-active?
+                         (filter
+                           (fn [x] (hosted-by? x host-port))
+                           (all-replicas host-port))))
+                 (Thread/sleep 1000)
+                 (recur)))
+             )))
 
 (defn find-in-replica-map [replicas state node_name]
   (filter
@@ -142,11 +147,15 @@
                                                 (assoc op :type :info :value r)))
                                             (catch Exception e (clojure.tools.logging/warn "Unable to write: " e) (assoc op :type :info :value :timed-out)))))
       :read (try
-              (info "Calling commit on solr")
               (info "Waiting for recovery before read")
+              ; Sleep for a while because after it takes a few seconds to re-connect to zookeeper after partitions
+              ; and if you ask for cluster state before that node has connected then you receive an error (zk session expired)
+              ; and the recovery functions blows up
+              (Thread/sleep (* 60 1000))
               (c/on-many (:nodes test) (wait (str c/*host* ":8983") 120))
               ;(Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
+              (info "Calling commit on solr")
               (flux/with-connection client (flux/commit))
               (assoc op :type :ok
                         :value (->> (all-results client "*:*")
@@ -232,6 +241,10 @@
                     )
       :read (try
               (info "Waiting for recovery before read")
+              ; Sleep for a while because after it takes a few seconds to re-connect to zookeeper after partitions
+              ; and if you ask for cluster state before that node has connected then you receive an error (zk session expired)
+              ; and the recovery functions blows up
+              (Thread/sleep (* 60 1000))
               (c/on-many (:nodes test) (wait (str c/*host* ":8983") 60))
               (Thread/sleep (* 1 1000))
               (info "Recovered; flushing index before read")
