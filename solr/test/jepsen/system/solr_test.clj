@@ -16,59 +16,26 @@
             [jepsen.report :as report]
             [jepsen.db :as db]))
 
-;(deftest register-test
-;  (let [test (run!
-;               (assoc
-;                 noop-test
-;                 :name      "solr"
-;                 ;:os        debian/os
-;                 ;:db        db/noop
-;                 :client    (cas-set-client)
-;                 :model     (model/set)
-;                 :checker   (checker/compose {:html timeline/html
-;                                              :set  checker/set})
-;                 ;:nemesis   (nemesis/partitioner nemesis/bridge)
-;                 :nemesis   (nemesis/partition-random-halves)
-;                 :generator (gen/phases
-;                              (->> (range)
-;                                   (map (fn [x] {:type  :invoke
-;                                                 :f     :add
-;                                                 :value x}))
-;                                   gen/seq
-;                                   (gen/stagger 1/10)
-;                                   (gen/delay 1)
-;                                   (gen/nemesis
-;                                     (gen/seq
-;                                       (cycle [(gen/sleep 60)
-;                                               {:type :info :f :start}
-;                                               (gen/sleep 300)
-;                                               {:type :info :f :stop}])))
-;                                   (gen/time-limit 600))
-;                              (gen/nemesis
-;                                (gen/once {:type :info :f :stop}))
-;                              (gen/clients
-;                                (gen/once {:type :invoke :f :read})))
-;                 :ssh { :username "ubuntu"
-;                        :password "ubuntu"
-;                        :strict-host-key-checking "false"}
-;                 ))]
-;    (is (:valid? (:results test)))
-;    (pprint (:results test))))
-
-(deftest create-test
+(deftest solr-test
          (let [test (run!
                       (assoc
                         noop-test
                         :name      "solr"
                         ;:os        debian/os
                         ;:db        db/noop
-                        :client    (create-set-client)
+                        :client    (case (System/getProperty "jepsen.solr.client")
+                                     "create-set-client" (create-set-client)
+                                     "cas-set-client" (cas-set-client))
                         :model     (model/set)
                         :checker   (checker/compose {:html timeline/html
                                                      :set  checker/set})
-                        :nemesis   isolate-self-primaries-nemesis
+                        ;:nemesis   isolate-self-primaries-nemesis
                         ;:nemesis   (nemesis/partition-random-node)
-                        ;:nemesis   (nemesis/partition-random-halves)
+                        :nemesis   (case (System/getProperty "jepsen.solr.nemesis")
+                                     "partition-random-halves" (nemesis/partition-random-halves)
+                                     "partition-random-node" (nemesis/partition-random-node)
+                                     "partition-halves" (nemesis/partition-halves)
+                                     "bridge" (nemesis/partitioner nemesis/bridge))
                         ;:nemesis   (nemesis/partition-halves)
                         ;:nemesis   (nemesis/partitioner nemesis/bridge)
                         :generator (gen/phases
