@@ -124,8 +124,8 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
-      ;(.setConnectionTimeout client 1000)
-      ;(.setSoTimeout client 3000)
+      (.setConnectionTimeout client 1000)
+      (.setSoTimeout client 3000)
       (flux/with-connection client
                             (flux/delete-by-query "*:*")
                             (flux/commit)
@@ -135,8 +135,7 @@
 
   (invoke! [this test op]
     (case (:f op)
-      ; large timeout value here because the server timeouts are applied and are respected by solr
-      :add (timeout 500000 (assoc op :type :info :value :timed-out)
+      :add (timeout 5000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
                                             (info (str "Adding " (:value op) " to node " (.getBaseURL client)))
@@ -193,8 +192,8 @@
   (setup! [_ test node]
     (let [
            client (fluxhttp/create (str "http://" (name node)  ":8983/solr") index-name)]
-      ;(.setConnectionTimeout client 1000)
-      ;(.setSoTimeout client 3000)
+      (.setConnectionTimeout client 1000)
+      (.setSoTimeout client 3000)
       (flux/with-connection client
                             (flux/delete-by-query "*:*")
                             (flux/add {:id doc-id :values []})
@@ -204,8 +203,7 @@
 
   (invoke! [this test op]
     (case (:f op)
-      ; large timeout value here because the server timeouts are applied and are respected by solr
-      :add (timeout 500000 (assoc op :type :info :value :timed-out)
+      :add (timeout 5000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
                                             (let [ _ (flux/commit)
