@@ -155,7 +155,6 @@
               (assoc op :type :ok
                         :value (->> (all-results client "*:*")
                                     (map (comp :value))
-                                    (map #(Integer/parseInt %))
                                     (into (sorted-set))))
               (catch RuntimeException e
                 (assoc op :type :fail :value (.getMessage e))))))
