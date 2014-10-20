@@ -126,10 +126,6 @@
            client (fluxhttp/create (str "http://" (name node) ":8983/solr") index-name)]
       (.setConnectionTimeout client 1000)
       (.setSoTimeout client 3000)
-      (flux/with-connection client
-                            (flux/delete-by-query "*:*")
-                            (flux/commit)
-                            )
       (info (str "creating client for http://" (name node) ":8983/solr/" index-name))
       (CreateSetClient. client)))
 
@@ -196,11 +192,8 @@
       (.setSoTimeout client 3000)
       (flux/with-connection client
                             (flux/delete-by-query "*:*")
-                            (flux/add {:id doc-id :values []})
-                            (flux/commit)
-                            )
+                            (flux/add {:id doc-id :values []}))
       (CASSetClient. doc-id client)))
-
   (invoke! [this test op]
     (case (:f op)
       :add (timeout 5000 (assoc op :type :info :value :timed-out)
