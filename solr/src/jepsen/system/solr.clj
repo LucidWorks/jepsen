@@ -199,9 +199,10 @@
       :add (timeout 5000 (assoc op :type :info :value :timed-out)
                     (flux/with-connection client
                                           (try
-                                            (let [ _ (flux/commit)
-                                                   current (flux/query (str "id:" doc-id) {:wt "json"})
-                                                  doc (get-first-doc current)
+                                            (let [current (flux/request
+                                                                      (q/create-query-request :get "/get"
+                                                                                              {:id doc-id}))
+                                                  doc (:doc current)
                                                   ]
                                               (if
                                                   (not (nil? doc))
