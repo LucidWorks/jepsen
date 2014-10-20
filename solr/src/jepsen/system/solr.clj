@@ -135,7 +135,7 @@
                     (flux/with-connection client
                                           (try
                                             (info (str "Adding " (:value op) " to node " (.getBaseURL client)))
-                                            (let [r (flux/add {:id (:value op)})]
+                                            (let [r (flux/add {:value (:value op)})]
                                               (if
                                                 (= 0 (get-in r [:responseHeader :status]))
                                                 (assoc op :type :ok)
@@ -154,7 +154,7 @@
               (flux/with-connection client (flux/commit))
               (assoc op :type :ok
                         :value (->> (all-results client "*:*")
-                                    (map (comp :id))
+                                    (map (comp :value))
                                     (map #(Integer/parseInt %))
                                     (into (sorted-set))))
               (catch RuntimeException e
