@@ -26,3 +26,5 @@ timeline.html
 resources/datomic/download-key
 resources/datomic/riak-transactor.properties
 /.nrepl-port
+.idea
+*.iml
