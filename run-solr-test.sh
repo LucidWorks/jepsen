@@ -1,6 +1,7 @@
 #!/bin/bash
 
-declare -a solr_clients=("create-set-client" "cas-set-client")
+#declare -a solr_clients=("create-set-client" "cas-set-client")
+declare -a solr_clients=("cas-set-client")
 declare -a solr_nemesis=("bridge" "partition-random-halves" "partition-halves")
 
 echo 'Copying over latest version of scripts to remote hosts'
@@ -47,7 +48,7 @@ do
     	curl 'http://n1:8983/solr/admin/collections?action=delete&name=jepsen5x3&wt=json&indent=on'
 	sleep 5
 	echo 'Creating new jepsen5x3 collection'
-	curl 'http://n1:8983/solr/admin/collections?action=create&name=jepsen5x3&numShards=5&replicationFactor=3&maxShardsPerNode=10&wt=json&collection.configName=jepsen2&indent=on'
+	curl 'http://n1:8983/solr/admin/collections?action=create&name=jepsen5x3&numShards=5&replicationFactor=3&maxShardsPerNode=10&wt=json&collection.configName=jepsen&indent=on'
 	sleep 10
 		jepsen_results_file=solrcloud_5zk_5x3_"$i"_"$j".txt
 
