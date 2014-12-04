@@ -189,7 +189,7 @@
     (let [
            client (fluxhttp/create (str "http://" (name node)  ":8983/solr") index-name)]
       (.setConnectionTimeout client 1000)
-      (.setSoTimeout client 3000)
+      (.setSoTimeout client 6000)
       (flux/with-connection client
                             (flux/delete-by-query "*:*")
                             (flux/add {:id doc-id :values []}))
