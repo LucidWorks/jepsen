@@ -1,7 +1,6 @@
 #!/bin/bash
 
-#declare -a solr_clients=("create-set-client" "cas-set-client")
-declare -a solr_clients=("cas-set-client")
+declare -a solr_clients=("create-set-client" "cas-set-client")
 declare -a solr_nemesis=("bridge" "partition-random-halves" "partition-halves")
 
 echo 'Copying over latest version of scripts to remote hosts'
