@@ -79,7 +79,7 @@
   [host-port timeout-secs]
   (timeout (* 1000 timeout-secs)
            (throw (RuntimeException.
-                    "Timed out waiting for solr node to be active"))
+                    (str "Timed out waiting for solr node: " host-port " to be active")))
            (loop []
              (let [replicas (all-replicas host-port)]
                (when (or
