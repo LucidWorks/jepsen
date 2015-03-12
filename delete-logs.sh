@@ -1,6 +1,8 @@
 #!/bin/bash
 
-rm zookeeper-3.4.6/zookeeper.out
-rm solr-4.10.2/example/logs/*
-rm -rf solr-4.10.2/example/solr/jepsen*
+source setup_env.sh
+
+rm $ZK_HOME/zookeeper.out
+rm $SOLR_DIR/server/logs/*
+rm -rf $SOLR_DIR/server/solr/jepsen*
 

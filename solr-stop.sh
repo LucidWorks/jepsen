@@ -1,8 +1,6 @@
 #!/bin/bash
 
-export JAVA_HOME=~/jdk1.8.0_25
-export PATH=$JAVA_HOME/bin:$PATH
+source setup_env.sh
 
-cd solr-4.10.2
+cd $SOLR_DIR
 ./bin/solr stop -all
-
