@@ -118,7 +118,7 @@ do
 		cd $results_dir
 		for k in 1 2 3 4 5
 		do
-		        sshpass -pubuntu scp ubuntu@n$k:~/$SOLR_DIR/example/logs/* .
+		        sshpass -pubuntu scp ubuntu@n$k:~/$SOLR_DIR/server/logs/* .
 		        sshpass -pubuntu scp ubuntu@n$k:~/$ZK_HOME/zookeeper.out .
                 sshpass -pubuntu ssh ubuntu@n$k 'bash delete-logs.sh'
 		        mv solr_gc.log n$k-solr-gc.log
