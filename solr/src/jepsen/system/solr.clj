@@ -151,7 +151,7 @@
               ;(Thread/sleep (* 10 1000))
               (info "Recovered; flushing index before read")
               (info "Calling commit on solr")
-              (flux/with-connection client (flux/commit))
+              (flux/with-connection client (flux/commit "softCommit" "true"))
               (assoc op :type :ok
                         :value (->> (all-results client "*:*")
                                     (map (comp :id))
@@ -239,7 +239,7 @@
               (c/on-many (:nodes test) (wait (str c/*host* ":8983") 60))
               (Thread/sleep (* 1 1000))
               (info "Recovered; flushing index before read")
-              (flux/with-connection client (flux/commit)
+              (flux/with-connection client (flux/commit "softCommit" "true")
                                     (try
                                       (let [r (flux/query (str "id:" doc-id) {:wt "json"})
                                             doc (get-first-doc r)
@@ -255,11 +255,11 @@
                                           (assoc op :type :fail)
                                           )
                                         )
-                                      (catch Exception e (assoc op :type :fail))
+                                      (catch Exception e (clojure.tools.logging/warn "Unable to read on: " (.getBaseURL client) " due to: " e) (assoc op :type :fail))
                                       )
 
                                     )
-              (catch Exception e (assoc op :type :fail))
+              (catch Exception e (clojure.tools.logging/warn "Unable to read on: " (.getBaseURL client) " due to: " e) (assoc op :type :fail))
               )
       )
 
