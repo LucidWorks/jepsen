@@ -111,7 +111,7 @@ do
 		done
 
 		echo 'Collecting logs from all hosts'
-		results_dir=~/temp/jepsen-results2/solrcloud_5zk_5x3_"$i"_"$j"
+		results_dir=~/test-results/jepsen-solr/solrcloud_5zk_5x3_"$i"_"$j"
 		mkdir -p $results_dir
 		here_dir=`pwd`
 		cp $jepsen_results_file $results_dir
