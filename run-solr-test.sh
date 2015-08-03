@@ -65,6 +65,9 @@ done
 
 upload_local_build $1
 
+current_time=$(date "+%Y.%m.%d-%H.%M.%S")
+parent_dir=~/test-results/jepsen-solr.$current_time
+
 for i in "${solr_clients[@]}"
 do
 	for j in "${solr_nemesis[@]}"
@@ -88,7 +91,7 @@ do
     	curl 'http://n1:8983/solr/admin/collections?action=delete&name=jepsen5x3&wt=json&indent=on'
 	sleep 5
 	echo 'Creating new jepsen5x3 collection'
-	curl 'http://n1:8983/solr/admin/collections?action=create&name=jepsen5x3&numShards=5&replicationFactor=3&maxShardsPerNode=10&wt=json&collection.configName=jepsen&indent=on&createNodeSet=n1:8983_solr,n2:8983_solr,n3:8983_solr,n4:8984_solr,n5:8983_solr'
+	curl 'http://n1:8983/solr/admin/collections?action=create&name=jepsen5x3&numShards=5&replicationFactor=3&maxShardsPerNode=10&wt=json&collection.configName=jepsen&indent=on&createNodeSet=n1:8983_solr,n2:8983_solr,n3:8983_solr,n4:8983_solr,n5:8983_solr'
 	sleep 10
 		jepsen_results_file=solrcloud_5zk_5x3_"$i"_"$j".txt
 
@@ -111,7 +114,7 @@ do
 		done
 
 		echo 'Collecting logs from all hosts'
-		results_dir=~/test-results/jepsen-solr/solrcloud_5zk_5x3_"$i"_"$j"
+		results_dir=$parent_dir'/solrcloud_5zk_5x3_'"$i"_"$j"
 		mkdir -p $results_dir
 		here_dir=`pwd`
 		cp $jepsen_results_file $results_dir
