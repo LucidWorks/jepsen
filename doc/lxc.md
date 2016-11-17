@@ -35,45 +35,9 @@ lxc-create -n n4 -t debian -- --release jessie
 lxc-create -n n5 -t debian -- --release jessie
 ```
 
-Fire up each VM:
+Note the root passwords.
 
-```sh
-lxc-start --name n1
-```
-
-And set your root password--I use `root`/`root` by default in Jepsen.
-
-```sh
-passwd
-```
-
-Copy your SSH key
-
-```sh
-cat ~/.ssh/id_rsa.pub
-```
-
-and add it to root's `authorized_keys`:
-
-```sh
-apt-get install -y sudo vim
-mkdir ~/.ssh
-chmod 700 ~/.ssh
-touch ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-vim ~/.ssh/authorized_keys
-```
-
-Shut each one down with `poweroff` so we can set up the network.
-
-Drop entries in `~/.ssh/config` for nodes:
-
-```
-Host n*
-User root
-```
-
-Edit /var/lib/lxc/n1/config, changing the network hwaddr to something unique. I suggest using sequential mac addresses for n1, n2, n3, ....
+Edit /var/lib/lxc/n1/config and friends, changing the network hwaddr to something unique. I suggest using sequential mac addresses for n1, n2, n3, ....
 
 ```
 # Template used to create this container: /usr/share/lxc/templates/lxc-debian
@@ -146,6 +110,74 @@ sudo lxc-start -d -n n4
 sudo lxc-start -d -n n5
 ```
 
+Fire up each VM:
+
+```sh
+jepsen-start
+```
+
+Log into the containers, (may have to specify tty 0 to use console correctly) e.g.,:
+
+```sh
+lxc-console --name n1 -t 0
+```
+
+(Optional?) In the containers, update keys used by apt to verify packages:
+
+```sh
+apt-key update
+apt-get update
+```
+
+And set your root password--I use `root`/`root` by default in Jepsen.
+
+```sh
+passwd
+```
+
+Copy your SSH key (on host):
+
+```sh
+cat ~/.ssh/id_rsa.pub
+```
+
+and add it to root's `authorized_keys` (in containers):
+
+```sh
+apt-get install -y sudo vim
+mkdir ~/.ssh
+chmod 700 ~/.ssh
+touch ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+vim ~/.ssh/authorized_keys
+```
+
+Enable password-based login for root (used by jsch):
+```sh
+sed  -i 's,^PermitRootLogin .*,PermitRootLogin yes,g' /etc/ssh/sshd_config
+systemctl restart sshd
+```
+
+[Remove systemd](http://without-systemd.org/wiki/index.php/How_to_remove_systemd_from_a_Debian_jessie/sid_installation).
+
+Detach from the container with Control+a q, and repeat for the remaining nodes.
+
+On the control node, drop entries in `~/.ssh/config` for nodes:
+
+```
+Host n*
+User root
+```
+
+Store the host keys unencrypted so that jsch can use them. If you already have
+the host keys, they may be unreadable to Jepsen--remove them from .known_hosts
+and rescan.
+
+```
+for n in $(seq 1 5); do ssh-keyscan -t rsa n$n; done >> ~/.ssh/known_hosts
+```
+
+And check that you can SSH to the nodes
 
 ```sh
 cssh n1 n2 n3 n4 n5
@@ -154,7 +186,9 @@ cssh n1 n2 n3 n4 n5
 And that should mostly do it, I think.
 
 ## Ubuntu 14.04 / trusty
+
 Follow generally the same steps as for Debian, but the process is easier. Reference: https://help.ubuntu.com/lts/serverguide/lxc.html
+
 * right after you have installed LXC, create or open /etc/lxc/dnsmasq.conf and add the following contents:
 
   ```
@@ -164,7 +198,9 @@ dhcp-host=n3,10.0.3.103
 dhcp-host=n4,10.0.3.104
 dhcp-host=n5,10.0.3.105
   ```
-  10.0.3.* is LXC's default network. If you want others, go for it but you'll have to change it in the main configuration for lxc as well.
+
+10.0.3.* is LXC's default network. If you want others, go for it but you'll have to change it in the main configuration for lxc as well.
+
 * you may not need to add cgroup to fstab and/or mount it. /sys/fs/cgroups may already be there.
 * Then, go and run the lxc-create command, but...
 * no need to edit /var/lib/lxc/*/config or set up a bridge, LXC does that for you.

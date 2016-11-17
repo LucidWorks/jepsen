@@ -4,7 +4,8 @@
   (:require [clojure.set :as set]
             [jepsen.util :refer [meh]]
             [jepsen.os :as os]
-            [jepsen.control :as c]
+            [jepsen.control :as c :refer [|]]
+            [jepsen.control.util :as cu]
             [jepsen.control.net :as net]
             [clojure.string :as str]))
 
@@ -27,7 +28,7 @@
   "When did we last run an apt-get update, in seconds ago"
   []
   (- (Long/parseLong (c/exec :date "+%s"))
-     (Long/parseLong (c/exec :stat :-c "%Y" "/var/cache/apt/pkgcache.bin"))))
+     (Long/parseLong (c/exec :stat :-c "%Y" "/var/cache/apt/pkgcache.bin" "||" :echo 0))))
 
 (defn update!
   "Apt-get update."
@@ -57,7 +58,7 @@
   [pkg-or-pkgs]
   (let [pkgs (if (coll? pkg-or-pkgs) pkg-or-pkgs (list pkg-or-pkgs))
         pkgs (installed pkgs)]
-    (c/su (apply c/exec :apt-get :remove :-y pkgs))))
+    (c/su (apply c/exec :apt-get :remove :--purge :-y pkgs))))
 
 (defn installed?
   "Are the given debian packages, or singular package, installed on the current
@@ -84,14 +85,54 @@
     (dorun
       (for [[pkg version] pkgs]
         (when (not= version (installed-version pkg))
-          (c/exec :apt-get :install :-y (str (name pkg) "=" version)))))
+          (info "Installing" pkg version)
+          (c/exec :apt-get :install :-y :--force-yes
+                  (str (name pkg) "=" version)))))
 
     ; Install any version
     (let [pkgs    (set (map name pkgs))
           missing (set/difference pkgs (installed pkgs))]
       (when-not (empty? missing)
         (c/su
-          (apply c/exec :apt-get :install :-y missing))))))
+          (info "Installing" missing)
+          (apply c/exec :apt-get :install :-y :--force-yes missing))))))
+
+(defn add-key!
+  "Receives an apt key from the given keyserver."
+  [keyserver key]
+  (c/su
+    (c/exec :apt-key :adv
+            :--keyserver keyserver
+            :--recv key)))
+
+(defn add-repo!
+  "Adds an apt repo (and optionally a key from the given keyserver)."
+  ([repo-name apt-line]
+   (add-repo! repo-name apt-line nil nil))
+  ([repo-name apt-line keyserver key]
+   (let [list-file (str "/etc/apt/sources.list.d/" (name repo-name) ".list")]
+     (when-not (cu/exists? list-file)
+       (info "setting up" repo-name "apt repo")
+       (when (or keyserver key)
+         (add-key! keyserver key))
+       (c/exec :echo apt-line :> list-file)
+       (update!)))))
+
+(defn install-jdk8!
+  "Installs an oracle jdk8 via webupd8. Ugh, this is such a PITA."
+  []
+  (c/su
+    (add-repo!
+      "webupd8"
+      "deb http://ppa.launchpad.net/webupd8team/java/ubuntu trusty main"
+      "hkp://keyserver.ubuntu.com:80"
+      "EEA14886")
+    (c/exec :echo "debconf shared/accepted-oracle-license-v1-1 select true" |
+            :debconf-set-selections)
+    (c/exec :echo "debconf shared/accepted-oracle-license-v1-1 seen true" |
+            :debconf-set-selections)
+    (install [:oracle-java8-installer])
+    (install [:oracle-java8-set-default])))
 
 (def os
   (reify os/OS
@@ -105,21 +146,20 @@
       (c/su
         ; Packages!
         (install [:wget
-                  :sysvinit-core
-                  :sysvinit
-                  :sysvinit-utils
                   :curl
                   :vim
-                  :man
+                  :man-db
                   :faketime
                   :unzip
                   :iptables
+                  :psmisc
+                  :tar
+                  :bzip2
+                  :libzip2
                   :iputils-ping
-                  :logrotate])
-
-        ; Fucking systemd breaks a bunch of packages
-        (if (installed? :systemd)
-          (c/exec :apt-get :remove :-y :--purge :--auto-remove :systemd)))
+                  :iproute
+                  :rsyslog
+                  :logrotate]))
 
       (meh (net/heal)))
 

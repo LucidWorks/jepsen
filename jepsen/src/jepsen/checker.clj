@@ -5,46 +5,84 @@
             [clojure.core :as core]
             [clojure.core.reducers :as r]
             [clojure.set :as set]
-            [jepsen.util :as util]
+            [clojure.java.io :as io]
+            [jepsen.util :as util :refer [meh]]
+            [jepsen.store :as store]
+            [jepsen.checker.perf :as perf]
             [multiset.core :as multiset]
             [gnuplot.core :as g]
-            [knossos.core :as knossos]
-            [knossos.history :as history]))
+            [knossos [model :as model]
+                     [op :as op]
+                     [linear :as linear]
+                     [history :as history]]
+            [knossos.linear.report :as linear.report]))
+
+(def valid-priorities
+  "A map of :valid? values to their importance. Larger numbers are considered
+  more signficant and dominate when checkers are composed."
+  {true      0
+   false     1
+   :unknown  0.5})
+
+(defn merge-valid
+  "Merge n :valid values, yielding the one with the highest priority."
+  [valids]
+  (reduce (fn [v1 v2]
+            (if (< (valid-priorities v1)
+                   (valid-priorities v2))
+              v2
+              v1))
+          valids))
 
 (defprotocol Checker
-  (check [checker test model history]
+  (check [checker test model history opts]
          "Verify the history is correct. Returns a map like
 
          {:valid? true}
 
          or
 
-         {:valid?    false
-          :failed-at [details of specific operations]}
+         {:valid?       false
+          :some-details ...
+          :failed-at    [details of specific operations]}
 
-         and maybe there can be some stats about what fraction of requests
-         were corrupt, etc."))
+         Opts is a map of options controlling checker execution. Keys include:
+
+         :subdirectory - A directory within this test's store directory where
+                         output files should be written. Defaults to nil."))
 
 (defn check-safe
   "Like check, but wraps exceptions up and returns them as a map like
 
-  {:valid? nil :error \"...\"}"
-  [checker test model history]
-  (try (check checker test model history)
-       (catch Throwable t
-         {:valid? false
-          :error (with-out-str (trace/print-cause-trace t))})))
+  {:valid? :unknown :error \"...\"}"
+  ([checker test model history]
+   (check-safe checker test model history {}))
+  ([checker test model history opts]
+   (try (check checker test model history opts)
+        (catch Throwable t
+          {:valid? :unknown
+           :error (with-out-str (trace/print-cause-trace t))}))))
 
 (def unbridled-optimism
   "Everything is awesoooommmmme!"
   (reify Checker
-    (check [this test model history] {:valid? true})))
+    (check [this test model history opts] {:valid? true})))
 
 (def linearizable
   "Validates linearizability with Knossos."
   (reify Checker
-    (check [this test model history]
-      (knossos/analysis model history))))
+    (check [this test model history opts]
+      (let [a (linear/analysis model history)]
+        (when-not (:valid? a)
+          (meh
+            ; Renderer can't handle really broad concurrencies yet
+            (linear.report/render-analysis!
+              history a (.getCanonicalPath (store/path! test (:subdirectory opts)
+                                                      "linear.svg")))))
+        ; Writing these can take *hours* so we truncate
+        (assoc a
+               :final-paths (take 10 (:final-paths a))
+               :configs     (take 10 (:configs a)))))))
 
 (def queue
   "Every dequeue must come from somewhere. Validates queue operations by
@@ -53,15 +91,15 @@
   should obey this property. Should probably be used with an unordered queue
   model, because we don't look for alternate orderings. O(n)."
   (reify Checker
-    (check [this test model history]
+    (check [this test model history opts]
       (let [final (->> history
                        (r/filter (fn select [op]
                                    (condp = (:f op)
-                                     :enqueue (knossos/invoke? op)
-                                     :dequeue (knossos/ok? op)
+                                     :enqueue (op/invoke? op)
+                                     :dequeue (op/ok? op)
                                      false)))
-                                 (reduce knossos/step model))]
-        (if (knossos/inconsistent? final)
+                                 (reduce model/step model))]
+        (if (model/inconsistent? final)
           {:valid? false
            :error  (:msg final)}
           {:valid?      true
@@ -72,48 +110,48 @@
   every successfully added element is present in the read, and that the read
   contains only elements for which an add was attempted."
   (reify Checker
-    (check [this test model history]
+    (check [this test model history opts]
       (let [attempts (->> history
-                          (r/filter knossos/invoke?)
+                          (r/filter op/invoke?)
                           (r/filter #(= :add (:f %)))
                           (r/map :value)
                           (into #{}))
             adds (->> history
-                      (r/filter knossos/ok?)
+                      (r/filter op/ok?)
                       (r/filter #(= :add (:f %)))
                       (r/map :value)
                       (into #{}))
             final-read (->> history
-                          (r/filter knossos/ok?)
+                          (r/filter op/ok?)
                           (r/filter #(= :read (:f %)))
                           (r/map :value)
                           (reduce (fn [_ x] x) nil))]
         (if-not final-read
-          {:valid? false
-           :error  "Set was never read"})
+          {:valid? :unknown
+           :error  "Set was never read"}
 
-        (let [; The OK set is every read value which we tried to add
-              ok          (set/intersection final-read attempts)
+          (let [; The OK set is every read value which we tried to add
+                ok          (set/intersection final-read attempts)
 
-              ; Unexpected records are those we *never* attempted.
-              unexpected  (set/difference final-read attempts)
+                ; Unexpected records are those we *never* attempted.
+                unexpected  (set/difference final-read attempts)
 
-              ; Lost records are those we definitely added but weren't read
-              lost        (set/difference adds final-read)
+                ; Lost records are those we definitely added but weren't read
+                lost        (set/difference adds final-read)
 
-              ; Recovered records are those where we didn't know if the add
-              ; succeeded or not, but we found them in the final set.
-              recovered   (set/difference ok adds)]
+                ; Recovered records are those where we didn't know if the add
+                ; succeeded or not, but we found them in the final set.
+                recovered   (set/difference ok adds)]
 
-          {:valid?          (and (empty? lost) (empty? unexpected))
-           :ok              (util/integer-interval-set-str ok)
-           :lost            (util/integer-interval-set-str lost)
-           :unexpected      (util/integer-interval-set-str unexpected)
-           :recovered       (util/integer-interval-set-str recovered)
-           :ok-frac         (util/fraction (count ok) (count attempts))
-           :unexpected-frac (util/fraction (count unexpected) (count attempts))
-           :lost-frac       (util/fraction (count lost) (count attempts))
-           :recovered-frac  (util/fraction (count recovered) (count attempts))})))))
+            {:valid?          (and (empty? lost) (empty? unexpected))
+             :ok              (util/integer-interval-set-str ok)
+             :lost            (util/integer-interval-set-str lost)
+             :unexpected      (util/integer-interval-set-str unexpected)
+             :recovered       (util/integer-interval-set-str recovered)
+             :ok-frac         (util/fraction (count ok) (count attempts))
+             :unexpected-frac (util/fraction (count unexpected) (count attempts))
+             :lost-frac       (util/fraction (count lost) (count attempts))
+             :recovered-frac  (util/fraction (count recovered) (count attempts))}))))))
 
 (defn fraction
   "a/b, but if b is zero, returns unity."
@@ -127,29 +165,38 @@
   successful dequeue. Queues only obey this property if the history includes
   draining them completely. O(n)."
   (reify Checker
-    (check [this test model history]
+    (check [this test model history opts]
       (let [attempts (->> history
-                          (r/filter knossos/invoke?)
+                          (r/filter op/invoke?)
                           (r/filter #(= :enqueue (:f %)))
                           (r/map :value)
                           (into (multiset/multiset)))
             enqueues (->> history
-                          (r/filter knossos/ok?)
+                          (r/filter op/ok?)
                           (r/filter #(= :enqueue (:f %)))
                           (r/map :value)
                           (into (multiset/multiset)))
             dequeues (->> history
-                          (r/filter knossos/ok?)
+                          (r/filter op/ok?)
                           (r/filter #(= :dequeue (:f %)))
                           (r/map :value)
                           (into (multiset/multiset)))
             ; The OK set is every dequeue which we attempted.
             ok         (multiset/intersect dequeues attempts)
 
-            ; Unexpected records are those we *never* attempted. Maybe
-            ; duplicates, maybe leftovers from some earlier state. Definitely
-            ; don't want your queue emitting records from nowhere!
-            unexpected (multiset/minus dequeues attempts)
+            ; Unexpected records are those we *never* tried to enqueue. Maybe
+            ; leftovers from some earlier state. Definitely don't want your
+            ; queue emitting records from nowhere!
+            unexpected (->> dequeues
+                            (remove (core/set (keys (multiset/multiplicities
+                                                 attempts))))
+                            (into (multiset/multiset)))
+
+            ; Duplicate records are those which were dequeued more times than
+            ; they could have been enqueued; but were attempted at least once.
+            duplicated (-> dequeues
+                           (multiset/minus attempts)
+                           (multiset/minus unexpected))
 
             ; lost records are ones which we definitely enqueued but never
             ; came out.
@@ -162,9 +209,11 @@
         {:valid?          (and (empty? lost) (empty? unexpected))
          :lost            lost
          :unexpected      unexpected
+         :duplicated      duplicated
          :recovered       recovered
          :ok-frac         (util/fraction (count ok)         (count attempts))
          :unexpected-frac (util/fraction (count unexpected) (count attempts))
+         :duplicated-frac (util/fraction (count duplicated) (count attempts))
          :lost-frac       (util/fraction (count lost)       (count attempts))
          :recovered-frac  (util/fraction (count recovered)  (count attempts))}))))
 
@@ -187,7 +236,7 @@
    :max-relative-error  Same, but with error computed as a fraction of the mean}
   "
   (reify Checker
-    (check [this test model history]
+    (check [this test model history opts]
       (loop [history            (seq (history/complete history))
              lower              0             ; Current lower bound on counter
              upper              0             ; Upper bound on counter value
@@ -229,99 +278,32 @@
   valid."
   [checker-map]
   (reify Checker
-    (check [this test model history]
+    (check [this test model history opts]
       (let [results (->> checker-map
                          (pmap (fn [[k checker]]
-                                 [k (check checker test model history)]))
+                                 [k (check checker test model history opts)]))
                          (into {}))]
-        (assoc results :valid? (every? :valid? (vals results)))))))
+        (assoc results :valid? (merge-valid (map :valid? (vals results))))))))
 
 (defn latency-graph
-  "Spits out graphs of latency to the given output directory."
-  [dir]
+  "Spits out graphs of latencies."
+  []
   (reify Checker
-    (check [this test model history]
-      (let [; Function to split up a seq of ops into OK, failed, and crashed ops
-            by-type (fn [ops]
-                      {:ok   (filter #(= :ok   (:type (:completion %))) ops)
-                       :fail (filter #(= :fail (:type (:completion %))) ops)
-                       :info (filter #(= :info (:type (:completion %))) ops)})
+    (check [_ test model history opts]
+      (perf/point-graph! test history opts)
+      (perf/quantiles-graph! test history opts)
+      {:valid? true})))
 
-            ; Function to extract a [time, latency] pair from an op
-            point   #(list (double (util/nanos->secs (:time %)))
-                           (double (util/nanos->ms   (:latency %))))
+(defn rate-graph
+  "Spits out graphs of throughput over time."
+  []
+  (reify Checker
+    (check [_ test model history opts]
+      (perf/rate-graph! test history opts)
+      {:valid? true})))
 
-            ; Preprocess history
-            history (util/history->latencies history)
-            invokes (filter #(= :invoke (:type %)) history)
-
-            ; Split up invocations by function, then ok/failed/crashed
-            datasets (->> invokes
-                          (group-by :f)
-                          (util/map-kv (fn [[f ops]]
-                                         [f (by-type ops)])))
-
-            ; What functions/types are we working with?
-            fs          (sort (keys datasets))
-            types       [:ok :info :fail]
-
-            ; How should we render types?
-            types->points {:ok   1
-                           :fail 2
-                           :info 3}
-
-            ; How should we render different fs?
-            fs->colors  (->> fs
-                             (map-indexed (fn [i f] [f i]))
-                             (into {}))
-
-            ; Extract nemesis start/stop pairs
-            final-time  (->> history
-                             rseq
-                             (filter :time)
-                             first
-                             :time
-                             util/nanos->secs
-                             double)
-            nemesis     (->> history
-                             util/nemesis-intervals
-                             (keep
-                               (fn [[start stop]]
-                                 (when start
-                                   [(-> start :time util/nanos->secs double)
-                                    (if stop
-                                      (-> stop :time util/nanos->secs double)
-                                      final-time)]))))]
-
-        (g/raw-plot!
-          (concat [[:set :output (str dir "/latency.png")]
-                   [:set :term :png, :truecolor, :size (g/list 900 400)]]
-                  '[[set title "Latency"]
-                    [set autoscale]
-                    [set xlabel "Time (s)"]
-                    [set ylabel "Latency (ms)"]
-                    [set key left top]
-                    [set logscale y]]
-                 ; Nemesis regions
-                 (map (fn [[start stop]]
-                        [:set :obj :rect
-                         :from (g/list start [:graph 0])
-                         :to   (g/list stop  [:graph 1])
-                         :fillcolor :rgb "#000000"
-                         :fillstyle :transparent :solid 0.05
-                         :noborder])
-                      nemesis)
-                 ; Plot ops
-                 [['plot (apply g/list
-                                (for [f fs, t types]
-                                  ["-"
-                                   'with 'points
-                                   'pointtype (types->points t)
-                                   'linetype  (fs->colors f)
-                                   'title (str (name f) " "
-                                               (name t))]))]])
-          (for [f fs, t types]
-            (map point (get-in datasets [f t]))))
-
-        {:valid? true
-         :file   (str dir "/latency.png")}))))
+(defn perf
+  "Assorted performance statistics"
+  []
+  (compose {:latency-graph (latency-graph)
+            :rate-graph    (rate-graph)}))
