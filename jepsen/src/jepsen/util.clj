@@ -3,10 +3,36 @@
   (:require [clojure.tools.logging :refer [info]]
             [clojure.core.reducers :as r]
             [clojure.string :as str]
+            [clojure.pprint :refer [pprint]]
+            [clojure.walk :as walk]
+            [clojure.java.io :as io]
             [clj-time.core :as time]
             [clj-time.local :as time.local]
+            [clojure.tools.logging :refer [debug info warn]]
             [knossos.history :as history])
-  (:import (java.util.concurrent.locks LockSupport)))
+  (:import (java.util.concurrent.locks LockSupport)
+           (java.io File
+                    RandomAccessFile)))
+
+(defn name+
+  "Tries name, falls back to pr-str."
+  [x]
+  (if (instance? clojure.lang.Named x)
+    (name x))
+    (pr-str x))
+
+(defn real-pmap
+  "Like pmap, but launches futures instead of using a bounded threadpool."
+  [f coll]
+  (->> coll
+       (map (fn launcher [x] (future (f x))))
+       doall
+       (map deref)))
+
+(defn processors
+  "How many processors on this platform?"
+  []
+  (.. Runtime getRuntime availableProcessors))
 
 (defn majority
   "Given a number, returns the smallest integer strictly greater than half."
@@ -20,11 +46,47 @@
     1
     (/ a b)))
 
+(defn inc*
+  "Like inc, but (inc nil) => 1."
+  [x]
+  (if (nil? x)
+    1
+    (inc x)))
+
 (defn local-time
   "Drops millisecond resolution"
   []
   (let [t (time.local/local-now)]
     (time/minus t (time/millis (time/milli t)))))
+
+(defn chunk-vec
+  "Partitions a vector into reducibles of size n (somewhat like partition-all)
+  but uses subvec for speed.
+
+      (chunk-vec 2 [1])     ; => ([1])
+      (chunk-vec 2 [1 2 3]) ; => ([1 2] [3])"
+   ([^long n v]
+   (let [c (count v)]
+     (->> (range 0 c n)
+          (map #(subvec v % (min c (+ % n))))))))
+
+(def buf-size 1048576)
+
+(defn concat-files!
+  "Appends contents of all fs, writing to out. Returns fs."
+  [out fs]
+  (with-open [oc (.getChannel (RandomAccessFile. (io/file out) "rw"))]
+    (doseq [f fs]
+      (with-open [fc (.getChannel (RandomAccessFile. (io/file f) "r"))]
+        (let [size (.size fc)]
+          (loop [position 0]
+            (when (< position size)
+              (recur (+ position (.transferTo fc
+                                              position
+                                              (min (- size position)
+                                                   buf-size)
+                                              oc)))))))))
+  fs)
 
 (defn op->str
   "Format an operation as a string."
@@ -36,16 +98,56 @@
        (when-let [err (:error op)]
          (str \tab err))))
 
+(defn prn-op
+  "Prints an operation to the console."
+  [op]
+  (pr (:process op)) (print \tab)
+  (pr (:type op))    (print \tab)
+  (pr (:f op))       (print \tab)
+  (pr (:value op))
+  (when-let [err (:error op)]
+    (print \tab) (print err))
+  (print \newline))
+
 (defn print-history
   "Prints a history to the console."
   [history]
   (doseq [op history]
-    (println (op->str op))))
+    (prn-op op)))
+
+(defn write-history!
+  "Writes a history to a file."
+  [f history]
+  (with-open [w (io/writer f)]
+    (binding [*out* w]
+      (print-history history))))
+
+(defn pwrite-history!
+  "Writes history, taking advantage of more cores."
+  [f history]
+  (if (or (< (count history) 16384) (not (vector? history)))
+    ; Plain old write
+    (write-history! f history)
+    ; Parallel variant
+    (let [chunks (chunk-vec (Math/ceil (/ (count history) (processors)))
+                            history)
+          files  (repeatedly (count chunks)
+                             #(File/createTempFile "jepsen-history" ".part"))]
+      (try
+        (->> chunks
+             (map (fn [file chunk] (future (write-history! file chunk) file))
+                  files)
+             doall
+             (map deref)
+             (concat-files! f))
+       (finally
+         (doseq [f files] (.delete ^File f)))))))
 
 (defn log-op
-  "Logs an operation."
+  "Logs an operation and returns it."
   [op]
-  (info (op->str op)))
+  (info (op->str op))
+  op)
 
 (def logger (agent nil))
 (defn log-print
@@ -137,6 +239,10 @@
     ~@body
      (nanos->ms (- (System/nanoTime) t0#))))
 
+(defn spy [x]
+  (info (with-out-str (pprint x)))
+  x)
+
 (defmacro unwrap-exception
   "Catches exceptions from body and re-throws their causes. Useful when you
   don't want the wrapper from, say, a future's exception handler."
@@ -161,6 +267,177 @@
            ~timeout-val)
        retval#)))
 
+(defmacro retry
+  "Evals body repeatedly until it doesn't throw, sleeping dt seconds."
+  [dt & body]
+  `(loop []
+     (let [res# (try ~@body
+                     (catch Throwable e#
+;                      (warn e# "retrying in" ~dt "seconds")
+                       ::failed))]
+       (if (= res# ::failed)
+         (do (Thread/sleep (* ~dt 1000))
+             (recur))
+         res#))))
+
+(defrecord Retry [bindings])
+
+(defmacro with-retry
+  "It's really fucking inconvenient not being able to recur from within (catch)
+  expressions. This macro wraps its body in a (loop [bindings] (try ...)).
+  Provides a (retry & new bindings) form which is usable within (catch) blocks:
+  when this form is returned by the body, the body will be retried with the new
+  bindings."
+  [initial-bindings & body]
+  (assert (vector? initial-bindings))
+  (assert (even? (count initial-bindings)))
+  (let [bindings-count (/ (count initial-bindings) 2)
+        body (walk/prewalk (fn [form]
+                             (if (and (seq? form)
+                                      (= 'retry (first form)))
+                               (do (assert (= bindings-count
+                                              (count (rest form))))
+                                   `(Retry. [~@(rest form)]))
+                               form))
+                           body)
+        retval (gensym 'retval)]
+    `(loop [~@initial-bindings]
+       (let [~retval (try ~@body)]
+        (if (instance? Retry ~retval)
+          (recur ~@(->> (range bindings-count)
+                        (map (fn [i] `(nth (.bindings ~retval) ~i)))))
+          ~retval)))))
+
+(deftype Return [value])
+
+(defn letr-rewrite-return
+  "Rewrites (return x) to (Return. x) in expr. Returns a pair of [changed?
+  expr], where changed is whether the expression contained a return."
+  [expr]
+  (let [return? (atom false)
+        expr    (walk/prewalk
+                  (fn [form]
+                    (if (and (seq? form)
+                             (= 'return (first form)))
+                      (do (assert
+                            (= 2 (count form))
+                            (str (pr-str form) " should have one argument"))
+                          (reset! return? true)
+                          `(Return. ~(second form)))
+                      form))
+                  expr)]
+    [@return? expr]))
+
+(defn letr-partition-bindings
+  "Takes a vector of bindings [sym expr, sym' expr, ...]. Returns
+  binding-groups: a sequence of vectors of bindgs, where the final binding in
+  each group has an early return. The final group (possibly empty!) contains no
+  early return."
+  [bindings]
+  (->> bindings
+       (partition 2)
+       (reduce (fn [groups [sym expr]]
+                 (let [[return? expr] (letr-rewrite-return expr)
+                       groups (assoc groups
+                                     (dec (count groups))
+                                     (-> (peek groups) (conj sym) (conj expr)))]
+                   (if return?
+                     (do (assert (symbol? sym)
+                                 (str (pr-str sym " must be a symbol")))
+                         (conj groups []))
+                     groups)))
+               [[]])))
+
+(defn letr-let-if
+  "Takes a sequence of binding groups and a body expression, and emits a let
+  for the first group, an if statement checking for a return, and recurses;
+  ending with body."
+  [groups body]
+  (assert (pos? (count groups)))
+  (if (= 1 (count groups))
+    ; Final group with no returns
+    `(let ~(first groups) ~@body)
+
+    ; Group ending in a return
+    (let [bindings  (first groups)
+          final-sym (nth bindings (- (count bindings) 2))]
+      `(let ~bindings
+         (if (instance? Return ~final-sym)
+           (.value ~final-sym)
+           ~(letr-let-if (rest groups) body))))))
+
+(defmacro letr
+  "Let bindings, plus early return.
+
+  You want to do some complicated, multi-stage operation assigning lots of
+  variables--but at different points in the let binding, you need to perform
+  some conditional check to make sure you can proceed to the next step.
+  Ordinarily, you'd intersperse let and if statements, like so:
+
+      (let [res (network-call)]
+        (if-not (:ok? res)
+          :failed-network-call
+
+          (let [people (:people (:body res))]
+            (if (zero? (count people))
+              :no-people
+
+              (let [res2 (network-call-2 people)]
+                ...
+
+  This is a linear chain of operations, but we're forced to nest deeply because
+  we have no early-return construct. In ruby, we might write
+
+      res = network_call
+      return :failed_network_call if not x.ok?
+
+      people = res[:body][:people]
+      return :no-people if people.empty?
+
+      res2 = network_call_2 people
+      ...
+
+  which reads the same, but requires no nesting thanks to Ruby's early return.
+  Clojure's single-return is *usually* a boon to understandability, but deep
+  linear branching usually means something like
+
+    - Deep nesting         (readability issues)
+    - Function chaining    (lots of arguments for bound variables)
+    - Throw/catch          (awkward exception wrappers)
+    - Monadic interpreter  (slow, indirect)
+
+  This macro lets you write:
+
+      (letr [res    (network-call)
+             _      (when-not (:ok? res) (return :failed-network-call))
+             people (:people (:body res))
+             _      (when (zero? (count people)) (return :no-people))
+             res2   (network-call-2 people)]
+        ...)
+
+  letr works like let, but if (return x) is ever returned from a binding, letr
+  returns x, and does not evaluate subsequent expressions.
+
+  If something other than (return x) is returned from evaluating a binding,
+  letr binds the corresponding variable as normal. Here, we use _ to indicate
+  that we're not using the results of (when ...), but this is not mandatory.
+  You cannot use a destructuring bind for a return expression.
+
+  letr is not a *true* early return--(return x) must be a *terminal* expression
+  for it to work--like (recur). For example,
+
+      (letr [x (do (return 2) 1)]
+        x)
+
+  returns 1, not 2, because (return 2) was not the terminal expression.
+
+  return only works within letr's bindings, not its body."
+  [bindings & body]
+  (assert (vector? bindings))
+  (assert (even? (count bindings)))
+  (let [groups (letr-partition-bindings bindings)]
+    (letr-let-if (letr-partition-bindings bindings) body)))
+
 (defn map-kv
   "Takes a function (f [k v]) which returns [k v], and builds a new map by
   applying f to every pair."
@@ -172,31 +449,44 @@
   [f m]
   (map-kv (fn [[k v]] [k (f v)]) m))
 
+(defn poly-compare
+  "Comparator function for sorting heterogenous collections."
+  [a b]
+  (try (compare a b)
+       (catch java.lang.ClassCastException e
+         (compare (str (class a)) (str (class b))))))
+
+(defn polysort
+  "Sort, but on heterogenous collections."
+  [coll]
+  (sort poly-compare coll))
+
 (defn integer-interval-set-str
   "Takes a set of integers and yields a sorted, compact string representation."
   [set]
-  (assert (not-any? nil? set))
-       (let [[runs start end]
-             (reduce (fn r [[runs start end] cur]
-                       (cond ; Start new run
-                             (nil? start) [runs cur cur]
+  (if (some nil? set)
+    (str set)
+    (let [[runs start end]
+          (reduce (fn r [[runs start end] cur]
+                    (cond ; Start new run
+                          (nil? start) [runs cur cur]
 
-                             ; Continue run
-                             (= cur (inc end)) [runs start cur]
+                          ; Continue run
+                          (= cur (inc end)) [runs start cur]
 
-                             ; Break!
-                             :else [(conj runs [start end]) cur cur]))
-                     [[] nil nil]
-                     (sort set))
-             runs (if (nil? start) runs (conj runs [start end]))]
-         (str "#{"
-              (->> runs
-                   (map (fn m [[start end]]
-                          (if (= start end)
-                            start
-                            (str start ".." end))))
-                   (str/join " "))
-              "}")))
+                          ; Break!
+                          :else [(conj runs [start end]) cur cur]))
+                  [[] nil nil]
+                  (sort set))
+          runs (if (nil? start) runs (conj runs [start end]))]
+      (str "#{"
+           (->> runs
+                (map (fn m [[start end]]
+                       (if (= start end)
+                         start
+                         (str start ".." end))))
+                (str/join " "))
+           "}"))))
 
 (defmacro meh
   "Returns, rather than throws, exceptions."
@@ -295,3 +585,27 @@
                                         [pairs starts]))
                                     [[] (clojure.lang.PersistentQueue/EMPTY)]))]
     (concat pairs (map vector starts (repeat nil)))))
+
+(defn longest-common-prefix
+  "Given a collection of sequences, finds the longest sequence which is a
+  prefix of every sequence given."
+  [cs]
+  (when (seq cs)
+    (reduce (fn prefix [s1 s2]
+              (let [len (->> (map = s1 s2)
+                             (take-while true?)
+                             count)]
+                ; Avoid unnecessary seq wrapping
+                (if (= len (count s1))
+                  s1
+                  (take len s2))))
+            cs)))
+
+(defn drop-common-proper-prefix
+  "Given a collection of sequences, removes the longest common proper prefix
+  from each one."
+  [cs]
+  (map (partial drop (reduce min
+                             (count (longest-common-prefix cs))
+                             (map (comp dec count) cs)))
+       cs))

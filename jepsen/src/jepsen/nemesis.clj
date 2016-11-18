@@ -6,9 +6,8 @@
             [jepsen.control     :as c]
             [jepsen.net         :as net]))
 
-(defn noop
+(def noop
   "Does nothing."
-  []
   (reify client/Client
     (setup! [this test node] this)
     (invoke! [this test op] op)
@@ -24,13 +23,8 @@
   reject messages from, and makes the appropriate changes. Does not heal the
   network first, so repeated calls to partition! are cumulative right now."
   [test grudge]
-  (->> grudge
-       (map (fn [[node frenemies]]
-              (future
-                (snub-nodes! test node frenemies))))
-       doall
-       (map deref)
-       dorun))
+  (c/on-nodes test (fn snub [test node]
+                     (snub-nodes! test node (get grudge node)))))
 
 (defn bisect
   "Given a sequence, cuts it in half; smaller half first."
@@ -129,10 +123,50 @@
   []
   (partitioner majorities-ring))
 
+(defn compose
+  "Takes a map of fs to nemeses and returns a single nemesis which, depending
+  on (:f op), routes to the appropriate child nemesis. `fs` should be a
+  function which takes (:f op) and returns either nil, if that nemesis should
+  not handle that :f, or a new :f, which replaces the op's :f, and the
+  resulting op is passed to the given nemesis. For instance:
+
+      (compose {#{:start :stop} (partition-random-halves)
+                #{:kill}        (process-killer)})
+
+  This routes `:kill` ops to process killer, and :start/:stop to the
+  partitioner. What if we had two partitioners which *both* take :start/:stop?
+
+      (compose {{:split-start :start
+                 :split-stop  :stop} (partition-random-halves)
+                {:ring-start  :start
+                 :ring-stop2  :stop} (partition-majorities-ring)})
+
+  We turn :split-start into :start, and pass that op to
+  partition-random-halves."
+  [nemeses]
+  (assert (map? nemeses))
+  (reify client/Client
+    (setup! [this test node]
+      (compose (util/map-vals #(client/setup! % test node) nemeses)))
+
+    (invoke! [this test op]
+      (let [f (:f op)]
+        (loop [nemeses nemeses]
+          (if-not (seq nemeses)
+            (throw (IllegalArgumentException.
+                     (str "no nemesis can handle " (:f op))))
+            (let [[fs nemesis] (first nemeses)]
+              (if-let [f' (fs f)]
+                (assoc (client/invoke! nemesis test (assoc op :f f')) :f f)
+                (recur (next nemeses))))))))
+
+    (teardown! [this test]
+      (util/map-vals #(client/teardown! % test) nemeses))))
+
 (defn set-time!
   "Set the local node time in POSIX seconds."
   [t]
-  (c/su (c/exec :date "+%s" :-s (long t))))
+  (c/su (c/exec :date "+%s" :-s (str \@ (long t)))))
 
 (defn clock-scrambler
   "Randomizes the system clock of all nodes within a dt-second window."
@@ -142,13 +176,14 @@
       this)
 
     (invoke! [this test op]
-      (c/on-many (:nodes test)
-                 (set-time! (+ (/ (System/currentTimeMillis) 1000)
-                               (- (rand-int (* 2 dt)) dt)))))
+      (assoc op :value
+             (c/with-test-nodes test
+               (set-time! (+ (/ (System/currentTimeMillis) 1000)
+                             (- (rand-int (* 2 dt)) dt))))))
 
     (teardown! [this test]
-      (c/on-many (:nodes test)
-                 (set-time! (/ (System/currentTimeMillis) 1000))))))
+      (c/with-test-nodes test
+        (set-time! (/ (System/currentTimeMillis) 1000))))))
 
 (defn node-start-stopper
   "Takes a targeting function which, given a list of nodes, returns a single
@@ -176,7 +211,8 @@
                    :start (if-let [ns (-> test :nodes targeter util/coll)]
                             (if (compare-and-set! nodes nil ns)
                               (c/on-many ns (start! test c/*host*))
-                              (str "nemesis already disrupting " @nodes))
+                              (str "nemesis already disrupting "
+                                   (pr-str @nodes)))
                             :no-target)
                    :stop (if-let [ns @nodes]
                            (let [value (c/on-many ns (stop! test c/*host*))]

@@ -1,14 +1,17 @@
 (ns jepsen.core-test
   (:use jepsen.core
+        jepsen.control.net
         clojure.test
         clojure.pprint
         clojure.tools.logging)
-  (:require [jepsen.os :as os]
+  (:require [clojure.string :as str]
+            [jepsen.os :as os]
             [jepsen.db :as db]
             [jepsen.tests :as tst]
             [jepsen.control :as control]
             [jepsen.client :as client]
             [jepsen.generator :as gen]
+            [jepsen.store :as store]
             [jepsen.model :as model]
             [jepsen.checker :as checker]))
 
@@ -31,7 +34,10 @@
         db-startups  (atom {})
         db-teardowns (atom {})
         db-primaries (atom [])
+        nonce        (rand-int Integer/MAX_VALUE)
+        nonce-file   "/tmp/jepsen-test"
         test (run! (assoc tst/noop-test
+                          :name      "ssh test"
                           :os (reify os/OS
                                 (setup! [_ test node]
                                   (swap! os-startups assoc node
@@ -44,25 +50,39 @@
                           :db (reify db/DB
                                 (setup! [_ test node]
                                   (swap! db-startups assoc node
-                                         (control/exec :hostname)))
+                                         (control/exec :hostname))
+                                  (control/exec :echo nonce :> nonce-file))
 
                                 (teardown! [_ test node]
                                   (swap! db-teardowns assoc node
-                                         (control/exec :hostname)))
+                                         (control/exec :hostname))
+                                  (control/exec :rm nonce-file))
 
                                 db/Primary
                                 (setup-primary! [_ test node]
                                   (swap! db-primaries conj
-                                         (control/exec :hostname))))))]
+                                         (control/exec :hostname)))
+
+                                db/LogFiles
+                                (log-files [_ test node]
+                                  [nonce-file]))))]
 
     (is (:valid? (:results test)))
+    (is (apply =
+               (str nonce)
+               (->> test
+                    :nodes
+                    (map #(->> (store/path test (name %)
+                                           (str/replace nonce-file #".+/" ""))
+                               slurp
+                               str/trim)))))
     (is (= @os-startups @os-teardowns @db-startups @db-teardowns
-           {:n1 "n1"
-            :n2 "n2"
-            :n3 "n3"
-            :n4 "n4"
-            :n5 "n5"}))
-    (is (= @db-primaries ["n1"]))))
+           {:n1 (:n1 hosts-map)
+            :n2 (:n2 hosts-map)
+            :n3 (:n3 hosts-map)
+            :n4 (:n4 hosts-map)
+            :n5 (:n5 hosts-map)}))
+    (is (= @db-primaries [(:n1 hosts-map)]))))
 
 (deftest worker-recovery-test
   ; Workers should only consume n ops even when failing.

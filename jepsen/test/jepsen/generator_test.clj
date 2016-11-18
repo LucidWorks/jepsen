@@ -10,12 +10,13 @@
 (defn ops
   "All ops from a generator"
   [threads gen]
-  (let [ops (atom [])]
+  (let [ops (atom [])
+        t   (assoc a-test :concurrency (count (filter integer? threads)))]
     (binding [gen/*threads* threads]
       (->> threads
            (map (fn [p] (future
                           (loop []
-                            (when-let [op (gen/op gen a-test p)]
+                            (when-let [op (gen/op gen t p)]
                               (swap! ops conj op)
                               (recur))))))
            doall
@@ -32,8 +33,8 @@
 
 (deftest seq-test
   (is (= (set (ops (:nodes a-test)
-              (gen/seq (range 100)))))
-      (set (range 100))))
+                   (gen/seq (range 100))))
+         (set (range 100)))))
 
 (deftest complex-test
   (let [ops (ops (:nodes a-test)

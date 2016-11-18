@@ -10,17 +10,22 @@
   Every object may act as a generator, and constantly yields itself.
 
   Big ol box of monads, really."
-  (:refer-clojure :exclude [concat delay seq filter])
+  (:refer-clojure :exclude [concat delay seq filter await])
   (:require [jepsen.util :as util]
+            [knossos.history :as history]
             [clojure.core :as c]
             [clojure.tools.logging :refer [info]])
   (:import (java.util.concurrent.atomic AtomicBoolean)
+           (java.util.concurrent.locks LockSupport)
            (java.util.concurrent CyclicBarrier)))
 
 (defprotocol Generator
   (op [gen test process] "Yields an operation to apply."))
 
 (extend-protocol Generator
+  nil
+  (op [this test process] nil)
+
   Object
   (op [this test process] this)
 
@@ -33,13 +38,53 @@
         (f)))))
 
 (def ^:dynamic *threads*
-  "The set of threads which will execute a particular generator. Used
-  where all threads must synchronize.")
+  "The ordered collection of threads which will execute a particular generator.
+  The special thread :nemesis is used for the nemesis; other threads are 0-n,
+  where n is the test concurrency. Processes map to threads: process mod n is
+  the thread ID.
+
+  The set of threads is used where multiple parts of a test must synchronize.")
+
+(defmacro with-threads
+  "Binds *threads* for duration of body. Safety check: asserts threads are
+  sorted."
+  [threads & body]
+  `(let [threads# ~threads]
+     (assert (= threads# (history/sort-processes threads#)))
+     (binding [*threads* threads#]
+       ~@body)))
+
+(defn process->thread
+  "Given a process identifier, return the corresponding thread identifier."
+  [test process]
+  (if (integer? process)
+    (mod process (:concurrency test))
+    process))
+
+(defn process->node
+  "Given a test and a process identifier, returns the corresponding node this
+  process is likely (clients aren't required to respect the node they're given)
+  talking to, if process is an integer. Otherwise, nil."
+  [test process]
+  (let [thread (process->thread test process)]
+    (when (integer? thread)
+      (nth (:nodes test) (mod thread (count (:nodes test)))))))
 
 (def void
   "A generator which terminates immediately"
   (reify Generator
     (op [gen test process])))
+
+(defn sleep-til-nanos
+  "High-resolution sleep; takes a time in nanos, relative to System/nanotime."
+  [t]
+  (while (< (+ (System/nanoTime) 10000) t)
+    (LockSupport/parkNanos (- t (System/nanoTime)))))
+
+(defn sleep-nanos
+  "High-resolution sleep; takes a (possibly fractional) time in nanos."
+  [dt]
+  (sleep-til-nanos (+ dt (System/nanoTime))))
 
 (defn delay-fn
   "Every operation from the underlying generator takes (f) seconds longer."
@@ -53,6 +98,41 @@
   "Every operation from the underlying generator takes dt seconds to return."
   [dt gen]
   (delay-fn (constantly dt) gen))
+
+(defn next-tick-nanos
+  "Given a period `dt` (in nanos), beginning at some point in time `anchor`
+  (also in nanos), finds the next tick after time `now`, such that the next
+  tick is separate from anchor by an exact multiple of dt. If now is omitted,
+  defaults to the current time."
+  ([anchor dt]
+   (next-tick-nanos anchor dt (util/linear-time-nanos)))
+  ([anchor dt now]
+   (+ now (- dt (mod (- now anchor) dt)))))
+
+(defn delay-til
+  "Operations are emitted as close as possible to multiples of dt seconds from
+  some epoch. Where `delay` introduces a fixed delay between completion and
+  invocation, delay-til attempts to schedule invocations as close as possible
+  to the same time. This is useful for triggering race conditions.
+
+  If precache? is true (the default), will pre-emptively request the next
+  operation from the underlying generator, to eliminate jitter from that
+  generator."
+  ([dt gen]
+   (delay-til dt true gen))
+  ([dt precache? gen]
+   (let [anchor (System/nanoTime)
+         dt     (util/secs->nanos dt)]
+     (if precache?
+       (reify Generator
+         (op [_ test process]
+           (let [op (op gen test process)]
+             (sleep-til-nanos (next-tick-nanos anchor dt))
+             op)))
+       (reify Generator
+         (op [_ test process]
+           (sleep-til-nanos (next-tick-nanos anchor dt))
+           (op gen test process)))))))
 
 (defn stagger
   "Introduces uniform random timing noise with a mean delay of dt seconds for
@@ -224,13 +304,58 @@
 
 (defn on
   [f source]
-  "Forwards operations to source generator iff (f process) is true. Rebinds
+  "Forwards operations to source generator iff (f thread) is true. Rebinds
   *threads* appropriately."
   (reify Generator
     (op [gen test process]
-      (when (f process)
+      (when (f (process->thread test process))
         (binding [*threads* (c/filter f *threads*)]
           (op source test process))))))
+
+(defn reserve
+  "Takes a series of count, generator pairs, and a final default generator.
+
+      (reserve 5 write 10 cas read)
+
+  The first 5 threads will call the `write` generator, the next 10 will emit
+  CAS operations, and the remaining threads will perform reads. This is
+  particularly useful when you want to ensure that two classes of operations
+  have a chance to proceed concurrently--for instance, if writes begin
+  blocking, you might like reads to proceed concurrently without every thread
+  getting tied up in a write.
+
+  Rebinds *threads* appropriately. Assumes that every invocation of this
+  generator arrives with the same binding for *threads*."
+  [& args]
+  (let [gens (->> args
+                   drop-last
+                   (partition 2)
+                   ; Construct [lower upper gen] tuples defining the range of
+                   ; thread indices covering a given generator, lower
+                   ; inclusive, upper exclusive.
+                   (reduce (fn [[n gens] [thread-count gen]]
+                             (let [n' (+ n thread-count)]
+                               [n' (conj gens [n n' gen])]))
+                           [0 []])
+                   second)
+        default (last args)]
+    (assert default)
+    (reify Generator
+      (op [_ test process]
+        (let [threads (vec *threads*)
+              thread  (process->thread test process)
+              ; If our thread is smaller than some upper bound in gens, we've
+              ; found our generator, since both *threads* and gens are ordered.
+              [lower upper gen] (or (some (fn [[lower upper gen :as tuple]]
+                                            (and (< thread (nth threads upper))
+                                                 tuple))
+                                          gens)
+                                    ; Default fallback
+                                    [(second (peek gens))
+                                     (count threads)
+                                     default])]
+          (with-threads (subvec threads lower upper)
+            (op gen test process)))))))
 
 (defn concat
   "Takes n generators and yields the first non-nil operation from any, in
@@ -258,6 +383,21 @@
   "Executes generator only on clients."
   ([client-gen]
    (on (complement #{:nemesis}) client-gen)))
+
+(defn await
+  "Blocks until the given fn returns, then allows [gen] to proceed. If no gen
+  is given, yields nil. Only invokes fn once."
+  ([f] (await f nil))
+  ([f gen]
+   (let [state (atom :waiting)]
+     (reify Generator
+       (op [_ test process]
+         (when (= @state :waiting)
+           (locking state
+             (when (= @state :waiting)
+               (f)
+               (reset! state :ready))))
+         (op gen test process))))))
 
 (defn synchronize
   "Blocks until all nodes are blocked awaiting operations from this generator,
