@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source setup_env.sh
+source config.sh
 
 cd $SOLR_DIR
 ./bin/solr stop -all

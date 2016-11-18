@@ -16,7 +16,8 @@ RUN apt-get -y -q update && \
         git \
         gnuplot \
         wget \
-	vim # not required by jepsen itself, just for ease of use
+        curl \
+        vim # not required by jepsen itself, just for ease of use
 
 RUN wget https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein && \
     mv lein /usr/bin && \

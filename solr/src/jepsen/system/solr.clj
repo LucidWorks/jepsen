@@ -140,7 +140,7 @@
                                                 (= 0 (get-in r [:responseHeader :status]))
                                                 (assoc op :type :ok)
                                                 (assoc op :type :info :value r)))
-                                            (catch Exception e (clojure.tools.logging/warn "Unable to write value=" (:value op) " on: " (.getBaseURL client) " due to: " e) (assoc op :type :info :value :timed-out)))))
+                                            (catch Exception e (clojure.tools.logging/warn "Unable to write value=" (:value op) " on: " (.getBaseURL client) " due to: " (.getMessage e)) (assoc op :type :info :value :timed-out)))))
       :read (try
               (info "Waiting for recovery before read")
               ; Sleep for a while because after it takes a few seconds to re-connect to zookeeper after partitions

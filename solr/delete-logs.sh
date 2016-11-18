@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source setup_env.sh
+source config.sh
 
 rm $ZK_HOME/zookeeper.out
 rm $SOLR_DIR/server/logs/*

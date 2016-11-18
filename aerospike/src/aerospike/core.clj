@@ -418,8 +418,4 @@
                                    (gen/delay 1/100)
                                    std-gen)
                    :checker   (checker/compose {:counter checker/counter
-<<<<<<< HEAD
-                                                :latency (checker/latency-graph "report/")})}))
-=======
                                                 :perf    (checker/perf)})}))
->>>>>>> bf372dd5a26e69078c6083b10ea4ea3973db741a

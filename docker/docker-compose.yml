@@ -12,6 +12,8 @@ services:
       - n3
       - n4
       - n5
+    volumes:
+      - ../solr/test-results:/root/test-results
   node:
     container_name: jepsen-node
     build: ./node
@@ -21,19 +23,29 @@ services:
     extends: node
     container_name: jepsen-n1
     hostname: n1
+    ports:
+      - "9000:8983"
   n2:
     extends: node
     container_name: jepsen-n2
     hostname: n2
+    ports:
+      - "9001:8983"
   n3:
     extends: node
     container_name: jepsen-n3
     hostname: n3
+    ports:
+      - "9002:8983"
   n4:
     extends: node
     container_name: jepsen-n4
     hostname: n4
+    ports:
+      - "9003:8983"
   n5:
     extends: node
     container_name: jepsen-n5
     hostname: n5
+    ports:
+      - "9004:8983"

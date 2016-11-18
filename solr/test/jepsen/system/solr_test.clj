@@ -21,23 +21,16 @@
                       (assoc
                         noop-test
                         :name      "solr"
-                        ;:os        debian/os
-                        ;:db        db/noop
                         :client    (case (System/getProperty "jepsen.solr.client")
                                      "create-set-client" (create-set-client)
                                      "cas-set-client" (cas-set-client))
                         :model     (model/set)
-                        :checker   (checker/compose {:html timeline/html
-                                                     :set  checker/set})
-                        ;:nemesis   isolate-self-primaries-nemesis
-                        ;:nemesis   (nemesis/partition-random-node)
+                        :checker   (checker/compose {:set  checker/set})
                         :nemesis   (case (System/getProperty "jepsen.solr.nemesis")
                                      "partition-random-halves" (nemesis/partition-random-halves)
                                      "partition-random-node" (nemesis/partition-random-node)
                                      "partition-halves" (nemesis/partition-halves)
                                      "bridge" (nemesis/partitioner nemesis/bridge))
-                        ;:nemesis   (nemesis/partition-halves)
-                        ;:nemesis   (nemesis/partitioner nemesis/bridge)
                         :generator (gen/phases
                                      (->> (range)
                                           (map (fn [x] {:type  :invoke
@@ -57,9 +50,6 @@
                                      (gen/nemesis
                                        (gen/once {:type :info :f :stop}))
                                      (gen/clients
-                                       (gen/once {:type :invoke :f :read})))
-                        :ssh { :username "ubuntu"
-                               :password "ubuntu"
-                               :strict-host-key-checking "false"}))]
+                                       (gen/once {:type :invoke :f :read})))))]
               (is (:valid? (:results test)))
               (pprint (:results test))))
